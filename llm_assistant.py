@@ -101,6 +101,45 @@ _HELP_HINTS = ("how do i", "how to", "what do i do", "how does this", "get start
                "instructions", "help", "where do i", "confused", "not sure what")
 
 
+# --- quality-improvement loop ------------------------------------------------
+# When a split looks dirty, the assistant escalates the engine/settings one rung
+# up this ladder and re-runs. The decision is deterministic so it always changes
+# something and works even with no LLM backend.
+IMPROVE_HINTS = ("improve", "better", "cleaner", "clean it", "not clean", "not good",
+                 "bad", "worse", "bleed", "bleeding", "noisy", "noise", "muddy",
+                 "muffled", "artifact", "redo", "re-run", "rerun", "try again",
+                 "fix", "leaking", "leak", "still hear")
+
+
+def wants_improvement(message: str) -> bool:
+    m = (message or "").lower()
+    return any(h in m for h in IMPROVE_HINTS)
+
+
+def improve_settings(complaint: str, engine: str, shifts: int) -> tuple[str, int, str]:
+    """Pick the next, stronger (engine, shifts) and explain it. Deterministic ladder."""
+    c = (complaint or "").lower()
+    vocal_focus = any(w in c for w in ("vocal", "voice", "sing", "acapella", "karaoke"))
+    if engine == "demucs":
+        if int(shifts) < 2:
+            return ("demucs", 2,
+                    "I turned on the **shift trick (shifts=2)** — it averages a few "
+                    "passes to cut artifacts. Re-running now (about 2× slower).")
+        return ("demucs_ft", max(int(shifts), 2),
+                "I switched to the **fine-tuned model (Demucs FT)**, which separates "
+                "more cleanly. It's ~4× slower — re-running now.")
+    if engine == "demucs_ft":
+        extra = " RoFormer is especially strong on vocals." if vocal_focus else ""
+        return ("roformer", int(shifts),
+                "I switched to **RoFormer**, a newer architecture that's the cleanest "
+                "option here (vocals/instrumental)." + extra + " Re-running now.")
+    # already on roformer — nothing stronger to escalate to
+    return ("roformer", int(shifts),
+            "You're already on **RoFormer**, the highest-quality engine. If it's still "
+            "not clean, the source mix may be the limit — try a different song section, "
+            "or run on a GPU for headroom. I'll re-run RoFormer once more.")
+
+
 def _rule_based_reply(message: str, available: list[str]) -> str:
     m = (message or "").lower()
     if any(h in m for h in _HELP_HINTS):

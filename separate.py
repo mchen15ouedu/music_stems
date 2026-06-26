@@ -34,6 +34,13 @@ DRUM_HF    = "vincewin/drumsep"      # mirror the Space downloads from
 DRUM_MAP   = {"bombo": "kick", "redoblante": "snare", "platillos": "cymbals", "toms": "toms"}
 DRUM_ORDER = ["kick", "snare", "toms", "cymbals"]
 
+# ---- RoFormer engine (newer architecture, via the 'audio-separator' package) ----
+# BS-RoFormer vocals model: cleaner vocals/instrumental split than Demucs, 2 stems.
+ROFORMER_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+
+# Engines selectable in the app: label-friendly quality tiers.
+ENGINES = ("demucs", "demucs_ft", "roformer")
+
 # ---- modes offered in the app: how many stems and how to reach them ----
 MODES = {
     "4": {"base": "htdemucs",    "drums": False, "vocals": False},
@@ -126,15 +133,20 @@ def _read_audio(path: str, sr: int, ch: int):
     return AudioFile(path).read(streams=0, samplerate=sr, channels=ch)
 
 
-def _run(model, wav, device):
-    """Normalize, run apply_model, de-normalize. wav: tensor [channels, samples]."""
+def _run(model, wav, device, shifts=0, overlap=0.25):
+    """Normalize, run apply_model, de-normalize. wav: tensor [channels, samples].
+
+    shifts > 0 enables Demucs's "shift trick" (test-time augmentation): the input
+    is shifted a few times and the results averaged, which reduces artifacts at a
+    roughly linear cost in time. overlap controls window blending at chunk edges.
+    """
     import torch
     from demucs.apply import apply_model
     ref = wav.mean(0)
     x = (wav - ref.mean()) / (ref.std() + 1e-8)
     with torch.no_grad():
-        out = apply_model(model, x[None].to(device), split=True, overlap=0.25,
-                          progress=False, device=device)[0]
+        out = apply_model(model, x[None].to(device), shifts=int(shifts), split=True,
+                          overlap=overlap, progress=False, device=device)[0]
     return out * (ref.std() + 1e-8) + ref.mean()
 
 
@@ -145,7 +157,7 @@ def _write(tensor, out_path: str, sr: int):
 
 # ---------------- public API ----------------
 def separate(input_path, out_dir, model_name=DEFAULT_MODEL, stems=None,
-             device=None, progress=None) -> list[str]:
+             device=None, progress=None, shifts=0, overlap=0.25) -> list[str]:
     """Base (single-model) separation. Used by the CLI and batch tool."""
     device = _pick_device(device)
     if progress:
@@ -160,7 +172,7 @@ def separate(input_path, out_dir, model_name=DEFAULT_MODEL, stems=None,
     wav = _read_audio(input_path, model.samplerate, model.audio_channels)
     if progress:
         progress(0.2, "Separating audio (slow on CPU)...")
-    out = _run(model, wav, device)
+    out = _run(model, wav, device, shifts=shifts, overlap=overlap)
     os.makedirs(out_dir, exist_ok=True)
     song = _safe(os.path.splitext(os.path.basename(input_path))[0])
     written = []
@@ -176,27 +188,32 @@ def separate(input_path, out_dir, model_name=DEFAULT_MODEL, stems=None,
 
 
 def separate_mode(input_path, out_dir, mode=DEFAULT_MODE, stems=None,
-                  device=None, progress=None) -> list[str]:
-    """Cascaded separation by mode ('4', '6', '9'). Writes '<song> - <stem>.wav'."""
+                  device=None, progress=None, base_override=None,
+                  shifts=0, overlap=0.25) -> list[str]:
+    """Cascaded separation by mode ('4', '6', '9'). Writes '<song> - <stem>.wav'.
+
+    base_override swaps the mode's base model (e.g. the fine-tuned 'htdemucs_ft'
+    for cleaner 4-stem output). shifts/overlap tune separation quality vs. speed.
+    """
     cfg = MODES[mode]
     device = _pick_device(device)
     if progress:
         progress(0.05, "Loading model...")
-    base = _load(cfg["base"])
+    base = _load(base_override or cfg["base"])
     sr = base.samplerate
     if progress:
         progress(0.1, "Reading audio...")
     wav = _read_audio(input_path, sr, base.audio_channels)
     if progress:
         progress(0.15, "Separating main stems (slow on CPU)...")
-    out = _run(base, wav, device)
+    out = _run(base, wav, device, shifts=shifts, overlap=overlap)
     result = {name: out[i] for i, name in enumerate(base.sources)}
 
     if cfg["drums"] and "drums" in result:
         if progress:
             progress(0.6, "Splitting drums into kick / snare / toms / cymbals...")
         dm = _load(DRUM_MODEL, repo=_ensure_drum_repo())
-        parts = _run(dm, result.pop("drums"), device)
+        parts = _run(dm, result.pop("drums"), device, shifts=shifts, overlap=overlap)
         for i, src in enumerate(dm.sources):
             result[DRUM_MAP.get(src, src)] = parts[i]
 
@@ -214,6 +231,55 @@ def separate_mode(input_path, out_dir, mode=DEFAULT_MODE, stems=None,
     if progress:
         progress(1.0, "Done")
     return written
+
+
+def separate_roformer(input_path, out_dir, progress=None) -> list[str]:
+    """High-quality vocals/instrumental split using a BS-RoFormer model.
+
+    Uses the 'audio-separator' package, which downloads the model on first use.
+    Produces two stems; files are renamed to the '<song> - <stem>.wav' convention.
+    """
+    from audio_separator.separator import Separator
+    os.makedirs(out_dir, exist_ok=True)
+    if progress:
+        progress(0.1, "Loading RoFormer model (first run downloads it ~1 min)...")
+    sep = Separator(output_dir=out_dir, output_format="WAV")
+    sep.load_model(model_filename=ROFORMER_MODEL)
+    if progress:
+        progress(0.3, "Separating with RoFormer (slow on CPU)...")
+    produced = sep.separate(input_path)  # list of output file names (in out_dir)
+    song = _safe(os.path.splitext(os.path.basename(input_path))[0])
+    written = []
+    for fn in produced:
+        src = fn if os.path.isabs(fn) else os.path.join(out_dir, fn)
+        low = os.path.basename(fn).lower()
+        stem = "vocals" if "vocal" in low else ("instrumental" if "instrument" in low else _safe(os.path.splitext(os.path.basename(fn))[0]))
+        dst = os.path.join(out_dir, f"{song} - {stem}.wav")
+        if os.path.abspath(src) != os.path.abspath(dst):
+            os.replace(src, dst)
+        written.append(dst)
+    if progress:
+        progress(1.0, "Done")
+    return written
+
+
+def run_separation(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
+                   stems=None, device=None, progress=None, shifts=0) -> list[str]:
+    """Single entry point the app uses; dispatches on the chosen engine.
+
+    - 'demucs'    : the mode's standard model (4/6/9-stem), with optional shifts.
+    - 'demucs_ft' : fine-tuned model for 4-stem (falls back to standard for 6/9),
+                    cleaner but ~4x slower.
+    - 'roformer'  : BS-RoFormer (newest architecture) — best vocals/instrumental,
+                    always 2 stems; mode/stem selection is ignored.
+    """
+    if engine == "roformer":
+        return separate_roformer(input_path, out_dir, progress=progress)
+    base_override = None
+    if engine == "demucs_ft" and MODES[mode]["base"] == "htdemucs":
+        base_override = "htdemucs_ft"
+    return separate_mode(input_path, out_dir, mode, stems, device=device,
+                         progress=progress, base_override=base_override, shifts=shifts)
 
 
 def merge_stems(paths, out_path) -> str:

@@ -33,6 +33,9 @@ SLIDES = [
     ("🎚️", "Step 5 — Merge (optional)",
      "In “Merge stems”, tick 2 or 3 of the new stems and press “Merge selected into one "
      "file” to combine them into a single custom track."),
+    ("🤖", "Step 6 — Not clean? Ask the assistant",
+     "If a stem sounds messy, tell the assistant (e.g. “vocals have bleed”). It bumps the "
+     "quality settings — shifts, then the fine-tuned model, then RoFormer — and re-runs."),
 ]
 
 
@@ -67,27 +70,47 @@ def on_upload(file_path):
     return name, file_path  # song name -> State, file path -> preview player
 
 
-def do_separate(file_path, mode, chosen, progress=gr.Progress()):
+def _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress):
+    """Run separation with the chosen engine/shifts and build the output tuple.
+
+    Shared by the Separate button and the assistant's improve-and-re-run flow.
+    """
     if not file_path:
         raise gr.Error("Please upload an audio file first.")
-    if not chosen:
-        raise gr.Error("Select at least one stem to generate.")
     out_dir = tempfile.mkdtemp(prefix="stems_")
-    paths = separate.separate_mode(
-        file_path, out_dir, mode, chosen, device=None,
-        progress=lambda f, m: progress(f, desc=m),
+    paths = separate.run_separation(
+        file_path, out_dir, engine=engine, mode=mode, stems=chosen,
+        device=None, shifts=int(shifts), progress=lambda f, m: progress(f, desc=m),
     )
-    names = ", ".join(os.path.basename(p) for p in paths)
-    # populate the merge picker with the stems we just created (label -> file path)
+    names = ", ".join(separate.stem_of(p) for p in paths)
     merge_choices = [(separate.stem_of(p), p) for p in paths]
+    history = (history or []) + [{
+        "role": "assistant",
+        "content": (f"✅ Stems are ready: {names}.\n\n**Not clean enough?** Tell me what's "
+                    "wrong (e.g. *“vocals have drum bleed”*) and I'll boost the settings and re-run."),
+    }]
     return (
-        paths,
-        f"✅ Done — generated {len(paths)} stem(s): {names}",
-        gr.update(choices=merge_choices, value=[]),
-        gr.update(visible=len(paths) >= 2),
-        None,
-        paths,  # -> stem_paths State, drives the per-stem preview players
+        paths,                                          # files_out
+        f"✅ Done — generated {len(paths)} stem(s): {names}",   # status
+        gr.update(choices=merge_choices, value=[]),     # merge_cg
+        gr.update(visible=len(paths) >= 2),             # merge_box
+        None,                                           # merge_out
+        paths,                                          # stem_paths -> preview players
+        history,                                        # chatbot
     )
+
+
+def do_separate(file_path, mode, chosen, engine, shifts, history, progress=gr.Progress()):
+    if engine != "roformer" and not chosen:
+        raise gr.Error("Select at least one stem to generate.")
+    return _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress)
+
+
+def improve_rerun(flag, file_path, mode, chosen, engine, shifts, history, progress=gr.Progress()):
+    """Chained after a chat turn: re-run separation only when the assistant asked to."""
+    if not flag:
+        return gr.skip()
+    return _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress)
 
 
 def do_reset():
@@ -106,6 +129,10 @@ def do_reset():
         "",                                              # merge_status
         [],                                              # stem_paths (clears preview players)
         "",                                              # song_name
+        "demucs",                                        # engine_dd
+        0,                                               # shifts_sl
+        False,                                           # improve_flag
+        [],                                              # chatbot (clear chat)
     )
 
 
@@ -128,14 +155,23 @@ def suggest_stems(goal, mode):
     return gr.update(value=picks), f"Suggested **{', '.join(picks)}** — {why}"
 
 
-def chat_fn(message, history, mode, song):
+def chat_fn(message, history, mode, song, engine, shifts, paths):
+    history = history or []
+    # If a split exists and the user complains about quality, escalate + flag a re-run.
+    if paths and assistant.wants_improvement(message):
+        new_engine, new_shifts, why = assistant.improve_settings(message, engine, int(shifts))
+        history = history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": why},
+        ]
+        return history, "", gr.update(value=new_engine), gr.update(value=new_shifts), True
     available = separate.mode_stems(mode)
     reply = assistant.chat(message, history, mode, available, song)
-    history = (history or []) + [
+    history = history + [
         {"role": "user", "content": message},
         {"role": "assistant", "content": reply},
     ]
-    return history, ""
+    return history, "", gr.update(), gr.update(), False
 
 
 with gr.Blocks(title="AI Stem Splitter") as demo:
@@ -143,6 +179,7 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
     song_name = gr.State("")
     slide_idx = gr.State(0)
     stem_paths = gr.State([])   # output stem file paths -> drives the preview players
+    improve_flag = gr.State(False)  # set by chat when the user asks to improve the split
 
     instr_btn = gr.Button("📖 Instructions", size="sm")
 
@@ -175,6 +212,22 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
                 value=separate.mode_stems(separate.DEFAULT_MODE),
                 label="Stems to generate",
             )
+            with gr.Accordion("⚙️ Quality (engine & shifts)", open=False):
+                engine_dd = gr.Dropdown(
+                    choices=[
+                        ("Demucs — fast", "demucs"),
+                        ("Demucs FT — cleaner, ~4× slower", "demucs_ft"),
+                        ("RoFormer — best vocals/instrumental (2 stems)", "roformer"),
+                    ],
+                    value="demucs", label="Engine",
+                    info="Higher quality = slower. RoFormer ignores the stem count "
+                         "(always vocals + instrumental).",
+                )
+                shifts_sl = gr.Slider(
+                    0, 10, value=0, step=1, label="Shifts",
+                    info="0 = fastest. Higher averages more passes for cleaner output "
+                         "(linear time cost). The assistant can raise this for you.",
+                )
             with gr.Row():
                 go = gr.Button("🎚️ Separate selected stems", variant="primary")
                 reset = gr.Button("🔄 Reset", variant="secondary")
@@ -210,14 +263,22 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
     # wiring
     mode_dd.change(on_mode_change, mode_dd, stems_cg)
     audio_in.change(on_upload, audio_in, [song_name, input_preview])
-    go.click(do_separate, [audio_in, mode_dd, stems_cg],
-             [files_out, status, merge_cg, merge_box, merge_out, stem_paths])
+    sep_outputs = [files_out, status, merge_cg, merge_box, merge_out, stem_paths, chatbot]
+    go.click(do_separate,
+             [audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, chatbot], sep_outputs)
     merge_btn.click(do_merge, merge_cg, [merge_out, merge_status])
     reset.click(do_reset, None,
                 [audio_in, input_preview, mode_dd, stems_cg, status, files_out,
-                 merge_box, merge_cg, merge_out, merge_status, stem_paths, song_name])
+                 merge_box, merge_cg, merge_out, merge_status, stem_paths, song_name,
+                 engine_dd, shifts_sl, improve_flag, chatbot])
     suggest_btn.click(suggest_stems, [goal_box, mode_dd], [stems_cg, status])
-    msg.submit(chat_fn, [msg, chatbot, mode_dd, song_name], [chatbot, msg])
+    # chat: answer; if it was an "improve" request, escalate settings then re-run
+    msg.submit(chat_fn,
+               [msg, chatbot, mode_dd, song_name, engine_dd, shifts_sl, stem_paths],
+               [chatbot, msg, engine_dd, shifts_sl, improve_flag]).then(
+        improve_rerun,
+        [improve_flag, audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, chatbot],
+        sep_outputs)
 
     # instructions slideshow
     instr_btn.click(lambda: (gr.update(visible=True), 0, slide_html(0),
