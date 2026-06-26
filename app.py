@@ -12,6 +12,56 @@ import gradio as gr
 import separate
 import llm_assistant as assistant
 
+# ---- Chartmetric-inspired dark theme (navy canvas, orange accent, teal/green) ----
+_ORANGE = gr.themes.Color("#FFF1E9", "#FFE0CC", "#FFC3A0", "#FFA476", "#FF8552",
+                          "#FF6A2B", "#E85A1E", "#C24A17", "#963811", "#6B270B", "#3A1607")
+_TEAL = gr.themes.Color("#E0FBF4", "#B6F3E6", "#8AEAD7", "#59DDC5", "#33D1B5",
+                        "#1FC8AE", "#17A892", "#118074", "#0C5F57", "#07403B", "#042320")
+_NAVY = gr.themes.Color("#EDEFF3", "#C9CFDA", "#97A0AE", "#6E7686", "#4B5160",
+                        "#3A4150", "#2B313D", "#1F242F", "#171B24", "#12161E", "#0E1116")
+
+def _build_theme():
+  return gr.themes.Base(
+    primary_hue=_ORANGE, secondary_hue=_TEAL, neutral_hue=_NAVY,
+    font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
+  ).set(
+    # page + surfaces (light and dark set identically so it's always the dark look)
+    body_background_fill="#0E1116", body_background_fill_dark="#0E1116",
+    body_text_color="#EDEFF3", body_text_color_dark="#EDEFF3",
+    background_fill_primary="#171B24", background_fill_primary_dark="#171B24",
+    background_fill_secondary="#12161E", background_fill_secondary_dark="#12161E",
+    block_background_fill="#171B24", block_background_fill_dark="#171B24",
+    block_border_color="#2B313D", block_border_color_dark="#2B313D",
+    block_label_text_color="#97A0AE", block_label_text_color_dark="#97A0AE",
+    block_title_text_color="#EDEFF3", block_title_text_color_dark="#EDEFF3",
+    border_color_primary="#2B313D", border_color_primary_dark="#2B313D",
+    input_background_fill="#1F242F", input_background_fill_dark="#1F242F",
+    input_border_color="#2B313D", input_border_color_dark="#2B313D",
+    # orange primary buttons / teal links / orange controls
+    button_primary_background_fill="#FF6A2B", button_primary_background_fill_dark="#FF6A2B",
+    button_primary_background_fill_hover="#FF8552", button_primary_background_fill_hover_dark="#FF8552",
+    button_primary_text_color="#2A1206", button_primary_text_color_dark="#2A1206",
+    button_secondary_background_fill="#1F242F", button_secondary_background_fill_dark="#1F242F",
+    button_secondary_text_color="#EDEFF3", button_secondary_text_color_dark="#EDEFF3",
+    button_secondary_border_color="#3A4150", button_secondary_border_color_dark="#3A4150",
+    slider_color="#FF6A2B", slider_color_dark="#FF6A2B",
+    checkbox_background_color_selected="#FF6A2B", checkbox_background_color_selected_dark="#FF6A2B",
+    link_text_color="#1FC8AE", link_text_color_dark="#1FC8AE",
+  )
+
+
+try:
+    THEME = _build_theme()
+except Exception:
+    # Fallback if a theme token name differs in this Gradio version — still applies
+    # the orange/teal/navy hues so the app boots with the right accent colors.
+    THEME = gr.themes.Base(primary_hue=_ORANGE, secondary_hue=_TEAL, neutral_hue=_NAVY)
+
+CSS = """
+.gradio-container {max-width: 1080px !important; margin: 0 auto;}
+footer {display: none !important;}
+"""
+
 DESCRIPTION = """
 # 🎵 AI Stem Splitter
 Upload a song, choose which **stems** (vocals, drums, bass, ...) you want, and download
@@ -43,12 +93,11 @@ def slide_html(i: int) -> str:
     i = max(0, min(len(SLIDES) - 1, i))
     emoji, title, text = SLIDES[i]
     return f"""
-    <div style="border:1px solid #6366f1;border-radius:14px;padding:28px 24px;
-                text-align:center;background:linear-gradient(180deg,#1e1b4b22,#312e8122);
-                min-height:180px;">
+    <div style="border:1px solid #FF6A2B;border-radius:14px;padding:28px 24px;
+                text-align:center;background:#12161E;min-height:180px;">
       <div style="font-size:64px;line-height:1;margin-bottom:12px;">{emoji}</div>
-      <div style="font-size:20px;font-weight:700;margin-bottom:8px;">{title}</div>
-      <div style="font-size:15px;opacity:.85;max-width:560px;margin:0 auto;">{text}</div>
+      <div style="font-size:20px;font-weight:700;margin-bottom:8px;color:#EDEFF3;">{title}</div>
+      <div style="font-size:15px;color:#97A0AE;max-width:560px;margin:0 auto;">{text}</div>
     </div>
     """
 
@@ -173,7 +222,7 @@ def chat_fn(message, history, mode, song, engine, shifts, paths):
     return history, "", gr.update(), gr.update(), False
 
 
-with gr.Blocks(title="AI Stem Splitter") as demo:
+with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     gr.Markdown(DESCRIPTION)
     song_name = gr.State("")
     slide_idx = gr.State(0)
