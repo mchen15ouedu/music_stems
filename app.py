@@ -75,23 +75,23 @@ try:
 except Exception:
     WAVEFORM = None
 
-DESCRIPTION = """
-Upload a song, choose which **stems** (vocals, drums, bass, ...) you want, and download
-each as its own audio file. The assistant on the right can recommend which stems to
-generate for your goal. New here? Press **📖 Instructions**.
-"""
-
 # Billboard-style masthead: heavy black wordmark on a light band, with a SQUARED
-# green strip directly beneath the title.
+# green strip directly beneath it that carries the tagline + intro text.
 HEADER = """
 <div style="background:#FFFFFF;padding:16px 20px 0;">
   <div style="font-family:'Anton',Impact,sans-serif;color:#0A0A0A;font-size:44px;
               line-height:1.0;letter-spacing:.01em;">🎵 AI STEM SPLITTER</div>
 </div>
-<div style="background:#2FD08A;color:#06231A;padding:9px 20px;border-radius:0;
-            margin:0 0 12px;font-family:'Oswald',sans-serif;font-weight:600;
-            font-size:13px;letter-spacing:.12em;text-transform:uppercase;">
-  Demucs · RoFormer · AI assistant — split any song into studio stems, free
+<div style="background:#2FD08A;color:#06231A;padding:11px 20px 14px;border-radius:0;margin:0 0 12px;">
+  <div style="font-family:'Oswald',sans-serif;font-weight:600;font-size:13px;
+              letter-spacing:.12em;text-transform:uppercase;">
+    Demucs · RoFormer · AI assistant — split any song into studio stems, free
+  </div>
+  <div style="font-family:Inter,system-ui,sans-serif;font-size:14px;line-height:1.55;margin-top:6px;">
+    Upload a song, choose which <b>stems</b> (vocals, drums, bass, ...) you want, and download
+    each as its own audio file. The assistant on the right can recommend which stems to generate
+    for your goal. New here? Press <b>📖 Instructions</b>.
+  </div>
 </div>
 """
 
@@ -250,7 +250,6 @@ def chat_fn(message, history, mode, song, engine, shifts, paths):
 
 with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     gr.HTML(HEADER)
-    gr.Markdown(DESCRIPTION)
     song_name = gr.State("")
     slide_idx = gr.State(0)
     stem_paths = gr.State([])   # output stem file paths -> drives the preview players
