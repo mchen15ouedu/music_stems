@@ -6,8 +6,10 @@ soundfile
 numpy
 gradio
 huggingface_hub
+# ZeroGPU: attaches a GPU per-call via @spaces.GPU (HF Pro Space, hardware=ZeroGPU).
+spaces
 # RoFormer engine (newest architecture): the "best quality" option in the UI.
-# CPU build; on a GPU Space use audio-separator[gpu] instead for big speedups.
-audio-separator[cpu]
+# GPU build (onnxruntime-gpu) to match the ZeroGPU hardware.
+audio-separator[gpu]
 # Optional: only needed for STEM_LLM_BACKEND=vllm/openai (GPU self-hosting). Harmless on CPU.
 openai

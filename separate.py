@@ -18,6 +18,15 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# ZeroGPU: @spaces.GPU marks the GPU entry point so HF attaches a GPU for that
+# call only. Off Spaces (local / CPU), `spaces` isn't installed -> no-op decorator.
+try:
+    import spaces
+    _gpu = spaces.GPU(duration=300)
+except Exception:
+    def _gpu(fn):
+        return fn
+
 # ---- base models (official Demucs) ----
 MODEL_STEMS = {
     "htdemucs":    ["drums", "bass", "other", "vocals"],
@@ -280,6 +289,15 @@ def run_separation(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
         base_override = "htdemucs_ft"
     return separate_mode(input_path, out_dir, mode, stems, device=device,
                          progress=progress, base_override=base_override, shifts=shifts)
+
+
+@_gpu
+def gpu_separate(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
+                 stems=None, shifts=0) -> list[str]:
+    """GPU entry point for ZeroGPU. Takes only picklable args (no progress callback,
+    which can't cross the GPU process boundary). Device auto-selects cuda when present."""
+    return run_separation(input_path, out_dir, engine=engine, mode=mode,
+                          stems=stems, device=None, shifts=shifts, progress=None)
 
 
 def merge_stems(paths, out_path) -> str:

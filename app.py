@@ -78,10 +78,9 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress):
     if not file_path:
         raise gr.Error("Please upload an audio file first.")
     out_dir = tempfile.mkdtemp(prefix="stems_")
-    paths = separate.run_separation(
-        file_path, out_dir, engine=engine, mode=mode, stems=chosen,
-        device=None, shifts=int(shifts), progress=lambda f, m: progress(f, desc=m),
-    )
+    progress(0.1, desc=f"Separating ({engine})… first RoFormer run downloads the model.")
+    paths = separate.gpu_separate(file_path, out_dir, engine, mode, chosen, int(shifts))
+    progress(1.0, desc="Done")
     names = ", ".join(separate.stem_of(p) for p in paths)
     merge_choices = [(separate.stem_of(p), p) for p in paths]
     history = (history or []) + [{
