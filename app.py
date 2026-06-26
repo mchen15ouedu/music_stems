@@ -58,13 +58,13 @@ except Exception:
     THEME = gr.themes.Base(primary_hue=_ORANGE, secondary_hue=_TEAL, neutral_hue=_NAVY)
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Oswald:wght@500;600;700&display=swap');
 .gradio-container {max-width: 1080px !important; margin: 0 auto;}
 footer {display: none !important;}
 h1, h2, h3, .prose h1, .prose h2, .prose h3, .md h1, .md h2, .md h3 {
-  font-family: 'Playfair Display', Georgia, serif !important;
-  font-weight: 700 !important;
-  letter-spacing: -0.01em;
+  font-family: 'Oswald', 'Arial Narrow', sans-serif !important;
+  font-weight: 600 !important;
+  letter-spacing: .01em;
 }
 .ok-msg, .ok-msg * { color: #2FD08A !important; }
 """
@@ -76,24 +76,22 @@ except Exception:
     WAVEFORM = None
 
 DESCRIPTION = """
-# 🎵 AI Stem Splitter
 Upload a song, choose which **stems** (vocals, drums, bass, ...) you want, and download
 each as its own audio file. The assistant on the right can recommend which stems to
 generate for your goal. New here? Press **📖 Instructions**.
 """
 
-# Billboard-style accent banner under the header (bold green strip with a tagline).
-BANNER = """
-<div style="background:#2FD08A;color:#06231A;border-radius:10px;
-            padding:11px 18px;margin:0 0 12px;display:flex;align-items:center;
-            justify-content:space-between;flex-wrap:wrap;gap:8px;">
-  <span style="font-family:'Playfair Display',Georgia,serif;font-weight:700;font-size:17px;">
-    Split any song into studio stems — free
-  </span>
-  <span style="font-family:Inter,system-ui,sans-serif;font-weight:500;font-size:12px;
-               letter-spacing:.06em;text-transform:uppercase;opacity:.85;">
-    Demucs · RoFormer · AI assistant
-  </span>
+# Billboard-style masthead: heavy black wordmark on a light band, with a SQUARED
+# green strip directly beneath the title.
+HEADER = """
+<div style="background:#FFFFFF;padding:16px 20px 0;">
+  <div style="font-family:'Anton',Impact,sans-serif;color:#0A0A0A;font-size:44px;
+              line-height:1.0;letter-spacing:.01em;">🎵 AI STEM SPLITTER</div>
+</div>
+<div style="background:#2FD08A;color:#06231A;padding:9px 20px;border-radius:0;
+            margin:0 0 12px;font-family:'Oswald',sans-serif;font-weight:600;
+            font-size:13px;letter-spacing:.12em;text-transform:uppercase;">
+  Demucs · RoFormer · AI assistant — split any song into studio stems, free
 </div>
 """
 
@@ -124,7 +122,7 @@ def slide_html(i: int) -> str:
     <div style="border:1px solid #FF6A2B;border-radius:14px;padding:28px 24px;
                 text-align:center;background:#12161E;min-height:180px;">
       <div style="font-size:64px;line-height:1;margin-bottom:12px;">{emoji}</div>
-      <div style="font-family:'Playfair Display',Georgia,serif;font-size:22px;font-weight:700;margin-bottom:8px;color:#EDEFF3;">{title}</div>
+      <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:600;margin-bottom:8px;color:#EDEFF3;">{title}</div>
       <div style="font-size:15px;color:#97A0AE;max-width:560px;margin:0 auto;">{text}</div>
     </div>
     """
@@ -251,8 +249,8 @@ def chat_fn(message, history, mode, song, engine, shifts, paths):
 
 
 with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
+    gr.HTML(HEADER)
     gr.Markdown(DESCRIPTION)
-    gr.HTML(BANNER)
     song_name = gr.State("")
     slide_idx = gr.State(0)
     stem_paths = gr.State([])   # output stem file paths -> drives the preview players
