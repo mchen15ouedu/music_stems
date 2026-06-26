@@ -62,8 +62,9 @@ def on_mode_change(mode):
 
 def on_upload(file_path):
     if not file_path:
-        return ""
-    return os.path.splitext(os.path.basename(file_path))[0]
+        return "", None
+    name = os.path.splitext(os.path.basename(file_path))[0]
+    return name, file_path  # song name -> State, file path -> preview player
 
 
 def do_separate(file_path, mode, chosen, progress=gr.Progress()):
@@ -85,6 +86,7 @@ def do_separate(file_path, mode, chosen, progress=gr.Progress()):
         gr.update(choices=merge_choices, value=[]),
         gr.update(visible=len(paths) >= 2),
         None,
+        paths,  # -> stem_paths State, drives the per-stem preview players
     )
 
 
@@ -121,6 +123,7 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
     gr.Markdown(DESCRIPTION)
     song_name = gr.State("")
     slide_idx = gr.State(0)
+    stem_paths = gr.State([])   # output stem file paths -> drives the preview players
 
     instr_btn = gr.Button("📖 Instructions", size="sm")
 
@@ -137,6 +140,7 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
         with gr.Column(scale=3):
             audio_in = gr.File(label="Upload song (mp3 / wav / flac / m4a ...)",
                                file_types=["audio"], type="filepath")
+            input_preview = gr.Audio(label="▶ Preview uploaded song", interactive=False)
             mode_dd = gr.Dropdown(
                 choices=[
                     ("4 stems · vocals, drums, bass, other", "4"),
@@ -156,6 +160,16 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
             status = gr.Markdown("")
             files_out = gr.File(label="Download stems", file_count="multiple", interactive=False)
 
+            gr.Markdown("#### ▶ Preview stems")
+
+            @gr.render(inputs=stem_paths)
+            def _stem_players(paths):
+                if not paths:
+                    gr.Markdown("*Separate a song to preview each stem here.*")
+                    return
+                for p in paths:
+                    gr.Audio(value=p, label=separate.stem_of(p), interactive=False)
+
             with gr.Group(visible=False) as merge_box:
                 gr.Markdown("### 🎚️ Merge stems\nTick 2–3 of the stems above and combine "
                             "them into one file (e.g. *drums + bass* for a rhythm track).")
@@ -174,9 +188,9 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
 
     # wiring
     mode_dd.change(on_mode_change, mode_dd, stems_cg)
-    audio_in.change(on_upload, audio_in, song_name)
+    audio_in.change(on_upload, audio_in, [song_name, input_preview])
     go.click(do_separate, [audio_in, mode_dd, stems_cg],
-             [files_out, status, merge_cg, merge_box, merge_out])
+             [files_out, status, merge_cg, merge_box, merge_out, stem_paths])
     merge_btn.click(do_merge, merge_cg, [merge_out, merge_status])
     suggest_btn.click(suggest_stems, [goal_box, mode_dd], [stems_cg, status])
     msg.submit(chat_fn, [msg, chatbot, mode_dd, song_name], [chatbot, msg])
