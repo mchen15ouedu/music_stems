@@ -8,3 +8,5 @@ stems_out/
 stems_*/
 *.wav
 .venv/
+# large model weights (the Space downloads these from a private HF mirror)
+models/

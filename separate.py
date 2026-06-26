@@ -1,23 +1,46 @@
 """
-Stem separation core, built on Demucs (Meta, MIT-licensed, free pretrained models).
+Stem separation core (Demucs) with optional cascades.
 
-Nothing here needs training: htdemucs / htdemucs_6s are pretrained and downloaded
-once (~80 MB each) into the torch hub cache on first use.
+  - base 4-stem / 6-stem separation  (official Meta models, trusted)
+  - drum split: the 'drums' stem -> kick / snare / toms / cymbals
+      (community 'drumsep' Hybrid-Demucs model; loaded with the full unpickler,
+       which the user explicitly authorized)
+  - vocal split: the 'vocals' stem -> lead / backing   (added on top of drums)
+
+Files are copied, never modified; analysis runs only on copies.
 """
 from __future__ import annotations
 import os
 import re
-from typing import Callable, Iterable
+from typing import Iterable
 
-# Stems each model produces. Demucs separates ALL stems in a single forward pass,
-# so "pick a subset" just means we save the chosen ones — the compute is identical.
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# ---- base models (official Demucs) ----
 MODEL_STEMS = {
-    "htdemucs":     ["drums", "bass", "other", "vocals"],            # default, best quality
-    "htdemucs_ft":  ["drums", "bass", "other", "vocals"],            # fine-tuned, ~4x slower
-    "htdemucs_6s":  ["drums", "bass", "other", "vocals", "guitar", "piano"],  # 6 stems
-    "mdx_extra":    ["drums", "bass", "other", "vocals"],
+    "htdemucs":    ["drums", "bass", "other", "vocals"],
+    "htdemucs_ft": ["drums", "bass", "other", "vocals"],
+    "htdemucs_6s": ["drums", "bass", "other", "vocals", "guitar", "piano"],
+    "mdx_extra":   ["drums", "bass", "other", "vocals"],
 }
 DEFAULT_MODEL = "htdemucs"
+
+# ---- drum-split (community 'drumsep' model) ----
+DRUM_REPO  = os.path.join(HERE, "models")
+DRUM_MODEL = "49469ca8"
+DRUM_HF    = "vincewin/drumsep"      # mirror the Space downloads from
+DRUM_MAP   = {"bombo": "kick", "redoblante": "snare", "platillos": "cymbals", "toms": "toms"}
+DRUM_ORDER = ["kick", "snare", "toms", "cymbals"]
+
+# ---- modes offered in the app: how many stems and how to reach them ----
+MODES = {
+    "4": {"base": "htdemucs",    "drums": False, "vocals": False},
+    "6": {"base": "htdemucs_6s", "drums": False, "vocals": False},
+    "9": {"base": "htdemucs_6s", "drums": True,  "vocals": False},
+}
+DEFAULT_MODE = "4"
 
 
 def available_models() -> list[str]:
@@ -25,8 +48,21 @@ def available_models() -> list[str]:
 
 
 def list_stems(model_name: str = DEFAULT_MODEL) -> list[str]:
-    """Stems a given model can produce."""
     return MODEL_STEMS.get(model_name, MODEL_STEMS[DEFAULT_MODEL])
+
+
+def mode_stems(mode: str) -> list[str]:
+    """Final stem names a mode produces (for the checkbox UI), in display order."""
+    cfg = MODES[mode]
+    out: list[str] = []
+    for s in MODEL_STEMS[cfg["base"]]:
+        if s == "drums" and cfg["drums"]:
+            out += DRUM_ORDER
+        elif s == "vocals" and cfg["vocals"]:
+            out += ["lead vocal", "backing vocal"]
+        else:
+            out.append(s)
+    return out
 
 
 def _safe(name: str) -> str:
@@ -44,68 +80,137 @@ def _pick_device(device: str | None) -> str:
         return "cpu"
 
 
-def separate(
-    input_path: str,
-    out_dir: str,
-    model_name: str = DEFAULT_MODEL,
-    stems: Iterable[str] | None = None,
-    device: str | None = None,
-    progress: Callable[[float, str], None] | None = None,
-) -> list[str]:
-    """
-    Separate `input_path` and write the requested `stems` as WAV files named
-    "<song> - <stem>.wav" into `out_dir`. Returns the list of written paths.
+# ---------------- model loading (cached) ----------------
+_CACHE: dict = {}
+_PATCHED = False
 
-    `stems=None` writes every stem the model produces. Uses demucs's stable
-    lower-level API (get_model / apply_model / save_audio).
+
+def _full_unpickle():
+    """Allow torch.load to deserialize the community drumsep checkpoint.
+
+    PyTorch >=2.6 defaults to weights_only=True, which refuses pickled model
+    objects. The user explicitly authorized loading this third-party model.
     """
+    global _PATCHED
+    if _PATCHED:
+        return
     import torch
-    import numpy as np
-    import soundfile as sf
-    from demucs.pretrained import get_model
-    from demucs.apply import apply_model
-    from demucs.audio import AudioFile
+    _orig = torch.load
+    torch.load = lambda *a, **k: _orig(*a, **{**k, "weights_only": False})
+    _PATCHED = True
 
+
+def _ensure_drum_repo() -> str:
+    path = os.path.join(DRUM_REPO, DRUM_MODEL + ".th")
+    if not os.path.exists(path):
+        from huggingface_hub import hf_hub_download
+        os.makedirs(DRUM_REPO, exist_ok=True)
+        hf_hub_download(repo_id=DRUM_HF, filename=DRUM_MODEL + ".th", local_dir=DRUM_REPO)
+    return DRUM_REPO
+
+
+def _load(name: str, repo: str | None = None):
+    key = (name, repo)
+    if key not in _CACHE:
+        _full_unpickle()
+        from pathlib import Path
+        from demucs.pretrained import get_model
+        m = get_model(name=name, repo=Path(repo) if repo else None)
+        m.eval()
+        _CACHE[key] = m
+    return _CACHE[key]
+
+
+def _read_audio(path: str, sr: int, ch: int):
+    from demucs.audio import AudioFile
+    return AudioFile(path).read(streams=0, samplerate=sr, channels=ch)
+
+
+def _run(model, wav, device):
+    """Normalize, run apply_model, de-normalize. wav: tensor [channels, samples]."""
+    import torch
+    from demucs.apply import apply_model
+    ref = wav.mean(0)
+    x = (wav - ref.mean()) / (ref.std() + 1e-8)
+    with torch.no_grad():
+        out = apply_model(model, x[None].to(device), split=True, overlap=0.25,
+                          progress=False, device=device)[0]
+    return out * (ref.std() + 1e-8) + ref.mean()
+
+
+def _write(tensor, out_path: str, sr: int):
+    import soundfile as sf
+    sf.write(out_path, np.clip(tensor.cpu().numpy().T, -1.0, 1.0), sr, subtype="PCM_16")
+
+
+# ---------------- public API ----------------
+def separate(input_path, out_dir, model_name=DEFAULT_MODEL, stems=None,
+             device=None, progress=None) -> list[str]:
+    """Base (single-model) separation. Used by the CLI and batch tool."""
     device = _pick_device(device)
     if progress:
         progress(0.05, f"Loading model '{model_name}' on {device}...")
-    model = get_model(model_name)
-    model.to(device)
-    model.eval()
-
-    sources = list(model.sources)  # true stem names/order, e.g. drums,bass,other,vocals
+    model = _load(model_name)
+    sources = list(model.sources)
     wanted = [s for s in (list(stems) if stems else sources) if s in sources]
     if not wanted:
-        raise ValueError(f"No valid stems requested for model {model_name}. "
-                         f"Choose from: {sources}")
-
+        raise ValueError(f"No valid stems for {model_name}. Choose from: {sources}")
     if progress:
         progress(0.1, "Reading audio...")
-    wav = AudioFile(input_path).read(
-        streams=0, samplerate=model.samplerate, channels=model.audio_channels)
-    ref = wav.mean(0)
-    wav = (wav - ref.mean()) / (ref.std() + 1e-8)  # normalize as demucs.separate does
-
+    wav = _read_audio(input_path, model.samplerate, model.audio_channels)
     if progress:
-        progress(0.2, "Separating audio (this is the slow part on CPU)...")
-    with torch.no_grad():
-        out = apply_model(model, wav[None].to(device),
-                          split=True, overlap=0.25, progress=True, device=device)[0]
-    out = out * (ref.std() + 1e-8) + ref.mean()  # de-normalize
-
+        progress(0.2, "Separating audio (slow on CPU)...")
+    out = _run(model, wav, device)
     os.makedirs(out_dir, exist_ok=True)
     song = _safe(os.path.splitext(os.path.basename(input_path))[0])
-    written: list[str] = []
+    written = []
     for i, name in enumerate(sources):
         if name not in wanted:
             continue
-        out_path = os.path.join(out_dir, f"{song} - {name}.wav")
-        # [channels, samples] -> [samples, channels], clamp, write 16-bit PCM WAV
-        audio = np.clip(out[i].cpu().numpy().T, -1.0, 1.0)
-        sf.write(out_path, audio, model.samplerate, subtype="PCM_16")
-        written.append(out_path)
+        p = os.path.join(out_dir, f"{song} - {name}.wav")
+        _write(out[i], p, model.samplerate)
+        written.append(p)
+    if progress:
+        progress(1.0, "Done")
+    return written
+
+
+def separate_mode(input_path, out_dir, mode=DEFAULT_MODE, stems=None,
+                  device=None, progress=None) -> list[str]:
+    """Cascaded separation by mode ('4', '6', '9'). Writes '<song> - <stem>.wav'."""
+    cfg = MODES[mode]
+    device = _pick_device(device)
+    if progress:
+        progress(0.05, "Loading model...")
+    base = _load(cfg["base"])
+    sr = base.samplerate
+    if progress:
+        progress(0.1, "Reading audio...")
+    wav = _read_audio(input_path, sr, base.audio_channels)
+    if progress:
+        progress(0.15, "Separating main stems (slow on CPU)...")
+    out = _run(base, wav, device)
+    result = {name: out[i] for i, name in enumerate(base.sources)}
+
+    if cfg["drums"] and "drums" in result:
         if progress:
-            progress(0.8 + 0.2 * (i + 1) / len(sources), f"Saved {name}")
+            progress(0.6, "Splitting drums into kick / snare / toms / cymbals...")
+        dm = _load(DRUM_MODEL, repo=_ensure_drum_repo())
+        parts = _run(dm, result.pop("drums"), device)
+        for i, src in enumerate(dm.sources):
+            result[DRUM_MAP.get(src, src)] = parts[i]
+
+    os.makedirs(out_dir, exist_ok=True)
+    song = _safe(os.path.splitext(os.path.basename(input_path))[0])
+    order = mode_stems(mode)
+    wanted = [s for s in (list(stems) if stems else order) if s in result]
+    written = []
+    for name in order:
+        if name not in wanted:
+            continue
+        p = os.path.join(out_dir, f"{song} - {name}.wav")
+        _write(result[name], p, sr)
+        written.append(p)
     if progress:
         progress(1.0, "Done")
     return written
@@ -113,16 +218,20 @@ def separate(
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Separate an audio file into stems with Demucs.")
-    ap.add_argument("input", help="Path to an audio file (mp3/wav/flac/m4a/...)")
-    ap.add_argument("-o", "--out", default="stems_out", help="Output folder")
+    ap = argparse.ArgumentParser(description="Separate an audio file into stems.")
+    ap.add_argument("input")
+    ap.add_argument("-o", "--out", default="stems_out")
+    ap.add_argument("--mode", default=None, choices=list(MODES.keys()),
+                    help="4 / 6 / 9 stems (cascaded). Overrides --model.")
     ap.add_argument("-m", "--model", default=DEFAULT_MODEL, choices=available_models())
-    ap.add_argument("-s", "--stems", nargs="*", default=None,
-                    help="Subset of stems to write (default: all)")
-    ap.add_argument("--device", default=None, help="cpu / cuda (auto if omitted)")
+    ap.add_argument("-s", "--stems", nargs="*", default=None)
+    ap.add_argument("--device", default=None)
     a = ap.parse_args()
-    paths = separate(a.input, a.out, a.model, a.stems, a.device,
-                     progress=lambda f, m: print(f"[{f*100:5.1f}%] {m}"))
+    pr = lambda f, m: print(f"[{f*100:5.1f}%] {m}")
+    if a.mode:
+        paths = separate_mode(a.input, a.out, a.mode, a.stems, a.device, progress=pr)
+    else:
+        paths = separate(a.input, a.out, a.model, a.stems, a.device, progress=pr)
     print("\nWrote:")
     for p in paths:
         print("  ", p)

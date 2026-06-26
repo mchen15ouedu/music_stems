@@ -20,8 +20,8 @@ generate for your goal.
 """
 
 
-def on_model_change(model_name):
-    stems = separate.list_stems(model_name)
+def on_mode_change(mode):
+    stems = separate.mode_stems(mode)
     return gr.update(choices=stems, value=stems)
 
 
@@ -31,29 +31,29 @@ def on_upload(file_path):
     return os.path.splitext(os.path.basename(file_path))[0]
 
 
-def do_separate(file_path, model_name, chosen, progress=gr.Progress()):
+def do_separate(file_path, mode, chosen, progress=gr.Progress()):
     if not file_path:
         raise gr.Error("Please upload an audio file first.")
     if not chosen:
         raise gr.Error("Select at least one stem to generate.")
     out_dir = tempfile.mkdtemp(prefix="stems_")
-    paths = separate.separate(
-        file_path, out_dir, model_name, chosen, device=None,
+    paths = separate.separate_mode(
+        file_path, out_dir, mode, chosen, device=None,
         progress=lambda f, m: progress(f, desc=m),
     )
     names = ", ".join(os.path.basename(p) for p in paths)
     return paths, f"✅ Done — generated {len(paths)} stem(s): {names}"
 
 
-def suggest_stems(goal, model_name):
-    available = separate.list_stems(model_name)
+def suggest_stems(goal, mode):
+    available = separate.mode_stems(mode)
     picks, why = assistant.recommend_stems(goal, available)
     return gr.update(value=picks), f"Suggested **{', '.join(picks)}** — {why}"
 
 
-def chat_fn(message, history, model_name, song):
-    available = separate.list_stems(model_name)
-    reply = assistant.chat(message, history, model_name, available, song)
+def chat_fn(message, history, mode, song):
+    available = separate.mode_stems(mode)
+    reply = assistant.chat(message, history, mode, available, song)
     history = (history or []) + [
         {"role": "user", "content": message},
         {"role": "assistant", "content": reply},
@@ -69,18 +69,19 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
         with gr.Column(scale=3):
             audio_in = gr.File(label="Upload song (mp3 / wav / flac / m4a ...)",
                                file_types=["audio"], type="filepath")
-            model_dd = gr.Dropdown(
+            mode_dd = gr.Dropdown(
                 choices=[
-                    ("4 stems · vocals, drums, bass, other (best quality)", "htdemucs"),
-                    ("6 stems · vocals, drums, bass, guitar, piano, other", "htdemucs_6s"),
+                    ("4 stems · vocals, drums, bass, other", "4"),
+                    ("6 stems · + guitar, piano", "6"),
+                    ("9 stems · 6 + drums split into kick, snare, toms, cymbals", "9"),
                 ],
-                value="htdemucs",
+                value=separate.DEFAULT_MODE,
                 label="How many stems?",
-                info="Choose 6 stems to also separate guitar and piano.",
+                info="More stems take longer. 9 splits the drum kit into its pieces.",
             )
             stems_cg = gr.CheckboxGroup(
-                choices=separate.list_stems(separate.DEFAULT_MODEL),
-                value=separate.list_stems(separate.DEFAULT_MODEL),
+                choices=separate.mode_stems(separate.DEFAULT_MODE),
+                value=separate.mode_stems(separate.DEFAULT_MODE),
                 label="Stems to generate",
             )
             go = gr.Button("🎚️ Separate selected stems", variant="primary")
@@ -96,11 +97,11 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
             msg = gr.Textbox(label="Message", placeholder="Ask the assistant anything about stems...")
 
     # wiring
-    model_dd.change(on_model_change, model_dd, stems_cg)
+    mode_dd.change(on_mode_change, mode_dd, stems_cg)
     audio_in.change(on_upload, audio_in, song_name)
-    go.click(do_separate, [audio_in, model_dd, stems_cg], [files_out, status])
-    suggest_btn.click(suggest_stems, [goal_box, model_dd], [stems_cg, status])
-    msg.submit(chat_fn, [msg, chatbot, model_dd, song_name], [chatbot, msg])
+    go.click(do_separate, [audio_in, mode_dd, stems_cg], [files_out, status])
+    suggest_btn.click(suggest_stems, [goal_box, mode_dd], [stems_cg, status])
+    msg.submit(chat_fn, [msg, chatbot, mode_dd, song_name], [chatbot, msg])
 
 if __name__ == "__main__":
     demo.launch()
