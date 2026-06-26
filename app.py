@@ -82,6 +82,21 @@ each as its own audio file. The assistant on the right can recommend which stems
 generate for your goal. New here? Press **📖 Instructions**.
 """
 
+# Billboard-style accent banner under the header (bold green strip with a tagline).
+BANNER = """
+<div style="background:#2FD08A;color:#06231A;border-radius:10px;
+            padding:11px 18px;margin:0 0 12px;display:flex;align-items:center;
+            justify-content:space-between;flex-wrap:wrap;gap:8px;">
+  <span style="font-family:'Playfair Display',Georgia,serif;font-weight:700;font-size:17px;">
+    Split any song into studio stems — free
+  </span>
+  <span style="font-family:Inter,system-ui,sans-serif;font-weight:500;font-size:12px;
+               letter-spacing:.06em;text-transform:uppercase;opacity:.85;">
+    Demucs · RoFormer · AI assistant
+  </span>
+</div>
+"""
+
 # --- step-by-step "figure" slideshow shown by the Instructions button ---
 SLIDES = [
     ("🎵", "Step 1 — Upload your song",
@@ -237,6 +252,7 @@ def chat_fn(message, history, mode, song, engine, shifts, paths):
 
 with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     gr.Markdown(DESCRIPTION)
+    gr.HTML(BANNER)
     song_name = gr.State("")
     slide_idx = gr.State(0)
     stem_paths = gr.State([])   # output stem file paths -> drives the preview players
