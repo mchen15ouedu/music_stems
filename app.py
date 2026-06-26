@@ -66,7 +66,14 @@ h1, h2, h3, .prose h1, .prose h2, .prose h3, .md h1, .md h2, .md h3 {
   font-weight: 700 !important;
   letter-spacing: -0.01em;
 }
+.ok-msg, .ok-msg * { color: #2FD08A !important; }
 """
+
+# Green-forward waveforms on every player (teal track, green progress fill).
+try:
+    WAVEFORM = gr.WaveformOptions(waveform_color="#1FC8AE", waveform_progress_color="#2FD08A")
+except Exception:
+    WAVEFORM = None
 
 DESCRIPTION = """
 # 🎵 AI Stem Splitter
@@ -250,7 +257,8 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
         with gr.Column(scale=3):
             audio_in = gr.File(label="Upload song (mp3 / wav / flac / m4a ...)",
                                file_types=["audio"], type="filepath")
-            input_preview = gr.Audio(label="▶ Preview uploaded song", interactive=False)
+            input_preview = gr.Audio(label="▶ Preview uploaded song", interactive=False,
+                                     waveform_options=WAVEFORM)
             mode_dd = gr.Dropdown(
                 choices=[
                     ("4 stems · vocals, drums, bass, other", "4"),
@@ -285,7 +293,7 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
             with gr.Row():
                 go = gr.Button("🎚️ Separate selected stems", variant="primary")
                 reset = gr.Button("🔄 Reset", variant="secondary")
-            status = gr.Markdown("")
+            status = gr.Markdown("", elem_classes=["ok-msg"])
             files_out = gr.File(label="Download stems", file_count="multiple", interactive=False)
 
             gr.Markdown("#### ▶ Preview stems")
@@ -296,15 +304,17 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
                     gr.Markdown("*Separate a song to preview each stem here.*")
                     return
                 for p in paths:
-                    gr.Audio(value=p, label=separate.stem_of(p), interactive=False)
+                    gr.Audio(value=p, label=separate.stem_of(p), interactive=False,
+                             waveform_options=WAVEFORM)
 
             with gr.Group(visible=False) as merge_box:
                 gr.Markdown("### 🎚️ Merge stems\nTick 2–3 of the stems above and combine "
                             "them into one file (e.g. *drums + bass* for a rhythm track).")
                 merge_cg = gr.CheckboxGroup(choices=[], label="Stems to merge")
                 merge_btn = gr.Button("Merge selected into one file", variant="primary")
-                merge_status = gr.Markdown("")
-                merge_out = gr.Audio(label="Merged track", interactive=False)
+                merge_status = gr.Markdown("", elem_classes=["ok-msg"])
+                merge_out = gr.Audio(label="Merged track", interactive=False,
+                                     waveform_options=WAVEFORM)
 
         with gr.Column(scale=2):
             gr.Markdown("### 🤖 Assistant\nAsk what each stem is, or describe your goal "
