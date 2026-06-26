@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.log
+*.log.err
+pip_pid.txt
+# generated audio / scratch output
+stems_out/
+stems_*/
+*.wav
+.venv/
