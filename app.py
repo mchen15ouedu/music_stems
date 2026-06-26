@@ -15,8 +15,8 @@ import llm_assistant as assistant
 DESCRIPTION = """
 # 🎵 AI Stem Splitter
 Upload a song, choose which **stems** (vocals, drums, bass, ...) you want, and download
-each as its own `.wav`. Powered by **Demucs** (free, pretrained — no training needed).
-The assistant on the right can recommend which stems to generate for your goal.
+each as its own audio file. The assistant on the right can recommend which stems to
+generate for your goal.
 """
 
 
@@ -70,9 +70,13 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
             audio_in = gr.File(label="Upload song (mp3 / wav / flac / m4a ...)",
                                file_types=["audio"], type="filepath")
             model_dd = gr.Dropdown(
-                choices=separate.available_models(), value=separate.DEFAULT_MODEL,
-                label="Separation model",
-                info="htdemucs = 4 stems (best quality). htdemucs_6s = 6 stems (adds guitar & piano).",
+                choices=[
+                    ("4 stems · vocals, drums, bass, other (best quality)", "htdemucs"),
+                    ("6 stems · vocals, drums, bass, guitar, piano, other", "htdemucs_6s"),
+                ],
+                value="htdemucs",
+                label="How many stems?",
+                info="Choose 6 stems to also separate guitar and piano.",
             )
             stems_cg = gr.CheckboxGroup(
                 choices=separate.list_stems(separate.DEFAULT_MODEL),
