@@ -58,8 +58,14 @@ except Exception:
     THEME = gr.themes.Base(primary_hue=_ORANGE, secondary_hue=_TEAL, neutral_hue=_NAVY)
 
 CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&display=swap');
 .gradio-container {max-width: 1080px !important; margin: 0 auto;}
 footer {display: none !important;}
+h1, h2, h3, .prose h1, .prose h2, .prose h3, .md h1, .md h2, .md h3 {
+  font-family: 'Playfair Display', Georgia, serif !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em;
+}
 """
 
 DESCRIPTION = """
@@ -96,7 +102,7 @@ def slide_html(i: int) -> str:
     <div style="border:1px solid #FF6A2B;border-radius:14px;padding:28px 24px;
                 text-align:center;background:#12161E;min-height:180px;">
       <div style="font-size:64px;line-height:1;margin-bottom:12px;">{emoji}</div>
-      <div style="font-size:20px;font-weight:700;margin-bottom:8px;color:#EDEFF3;">{title}</div>
+      <div style="font-family:'Playfair Display',Georgia,serif;font-size:22px;font-weight:700;margin-bottom:8px;color:#EDEFF3;">{title}</div>
       <div style="font-size:15px;color:#97A0AE;max-width:560px;margin:0 auto;">{text}</div>
     </div>
     """
