@@ -88,7 +88,7 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
                         "(e.g. *“I want a karaoke track”*) and I'll suggest stems.")
             goal_box = gr.Textbox(label="Your goal", placeholder="e.g. karaoke / drumless practice / acapella")
             suggest_btn = gr.Button("Suggest stems for this goal")
-            chatbot = gr.Chatbot(type="messages", height=300, label="Chat")
+            chatbot = gr.Chatbot(height=300, label="Chat")  # messages format is default in gradio 6
             msg = gr.Textbox(label="Message", placeholder="Ask the assistant anything about stems...")
 
     # wiring
@@ -99,4 +99,4 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
     msg.submit(chat_fn, [msg, chatbot, model_dd, song_name], [chatbot, msg])
 
 if __name__ == "__main__":
-    demo.launch(theme=gr.themes.Soft())
+    demo.launch()
