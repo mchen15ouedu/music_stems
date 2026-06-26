@@ -90,6 +90,25 @@ def do_separate(file_path, mode, chosen, progress=gr.Progress()):
     )
 
 
+def do_reset():
+    """Clear everything back to the initial state so a new file can be dropped in."""
+    default_stems = separate.mode_stems(separate.DEFAULT_MODE)
+    return (
+        None,                                            # audio_in
+        None,                                            # input_preview
+        separate.DEFAULT_MODE,                           # mode_dd
+        gr.update(choices=default_stems, value=default_stems),  # stems_cg
+        "",                                              # status
+        None,                                            # files_out
+        gr.update(visible=False),                        # merge_box
+        gr.update(choices=[], value=[]),                 # merge_cg
+        None,                                            # merge_out
+        "",                                              # merge_status
+        [],                                              # stem_paths (clears preview players)
+        "",                                              # song_name
+    )
+
+
 def do_merge(selected, progress=gr.Progress()):
     if not selected or len(selected) < 2:
         raise gr.Error("Tick at least two stems to merge.")
@@ -156,7 +175,9 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
                 value=separate.mode_stems(separate.DEFAULT_MODE),
                 label="Stems to generate",
             )
-            go = gr.Button("🎚️ Separate selected stems", variant="primary")
+            with gr.Row():
+                go = gr.Button("🎚️ Separate selected stems", variant="primary")
+                reset = gr.Button("🔄 Reset", variant="secondary")
             status = gr.Markdown("")
             files_out = gr.File(label="Download stems", file_count="multiple", interactive=False)
 
@@ -192,6 +213,9 @@ with gr.Blocks(title="AI Stem Splitter") as demo:
     go.click(do_separate, [audio_in, mode_dd, stems_cg],
              [files_out, status, merge_cg, merge_box, merge_out, stem_paths])
     merge_btn.click(do_merge, merge_cg, [merge_out, merge_status])
+    reset.click(do_reset, None,
+                [audio_in, input_preview, mode_dd, stems_cg, status, files_out,
+                 merge_box, merge_cg, merge_out, merge_status, stem_paths, song_name])
     suggest_btn.click(suggest_stems, [goal_box, mode_dd], [stems_cg, status])
     msg.submit(chat_fn, [msg, chatbot, mode_dd, song_name], [chatbot, msg])
 
