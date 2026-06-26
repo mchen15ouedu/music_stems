@@ -216,6 +216,48 @@ def separate_mode(input_path, out_dir, mode=DEFAULT_MODE, stems=None,
     return written
 
 
+def merge_stems(paths, out_path) -> str:
+    """Mix several stem .wav files back into one track by summing their samples.
+
+    Demucs stems are additive (they sum to the original), so combining a subset
+    is just a sample-wise sum. Inputs are aligned on length/channels defensively
+    in case the caller mixes files from different sources.
+    """
+    import soundfile as sf
+    paths = list(paths)
+    if len(paths) < 2:
+        raise ValueError("Select at least two stems to merge.")
+    mix = None
+    sr = None
+    for p in paths:
+        data, file_sr = sf.read(p, always_2d=True)  # shape [samples, channels]
+        data = data.astype(np.float64)
+        if mix is None:
+            mix, sr = data, file_sr
+            continue
+        if file_sr != sr:
+            raise ValueError("Stems have different sample rates; cannot merge.")
+        if data.shape[1] != mix.shape[1]:          # mono vs stereo -> upmix mono
+            wide = max(data.shape[1], mix.shape[1])
+            if data.shape[1] == 1:
+                data = np.repeat(data, wide, axis=1)
+            if mix.shape[1] == 1:
+                mix = np.repeat(mix, wide, axis=1)
+        if data.shape[0] != mix.shape[0]:          # trim to the shorter one
+            n = min(data.shape[0], mix.shape[0])
+            mix, data = mix[:n], data[:n]
+        mix = mix + data
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    sf.write(out_path, np.clip(mix, -1.0, 1.0), sr, subtype="PCM_16")
+    return out_path
+
+
+def stem_of(path: str) -> str:
+    """Recover the stem label from a '<song> - <stem>.wav' filename."""
+    base = os.path.splitext(os.path.basename(path))[0]
+    return base.split(" - ")[-1] if " - " in base else base
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Separate an audio file into stems.")

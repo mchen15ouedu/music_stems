@@ -46,15 +46,37 @@ GOAL_RECIPES = {
 }
 
 
+# Plain-language walkthrough of the app, shared by the LLM prompt and the
+# rule-based fallback so the assistant can always explain "what do I do?".
+APP_STEPS = [
+    "Upload your song with the file box on the left (mp3, wav, flac, m4a...).",
+    "Pick how many stems you want (4, 6, or 9). More stems take longer.",
+    "Tick the stems you want to keep, then press 'Separate selected stems'.",
+    "When it finishes, download each stem from the 'Download stems' box.",
+    "Optional: in the 'Merge stems' section, tick 2-3 of the new stems and press "
+    "'Merge selected into one file' to mix them back into a single track "
+    "(e.g. drums + bass for a rhythm backing).",
+]
+
+
+def how_to_use() -> str:
+    steps = "\n".join(f"{i}. {s}" for i, s in enumerate(APP_STEPS, 1))
+    return "Here's how to use the app:\n\n" + steps
+
+
 def _system_prompt(model_name: str, available: list[str], song: str | None) -> str:
     gloss = "\n".join(f"  - {s}: {STEM_GLOSSARY.get(s, s)}" for s in available)
     ctx = f"\nThe user loaded: \"{song}\"." if song else ""
+    steps = "\n".join(f"  {i}. {s}" for i, s in enumerate(APP_STEPS, 1))
     return (
         "You are a friendly audio-engineering assistant embedded in a stem-separation app. "
         "The app uses the Demucs model to split a song into separate audio stems. "
-        f"The selected model ('{model_name}') can produce these stems:\n{gloss}\n"
-        "Help the user decide which stems to generate for their goal (karaoke, remix, "
-        "instrument practice, transcription, sampling). When you recommend stems, name them "
+        f"The selected model ('{model_name}') can produce these stems:\n{gloss}\n\n"
+        "If the user is unsure what to do or asks how to use the app, walk them through "
+        f"these steps in plain language:\n{steps}\n\n"
+        "Otherwise, help the user decide which stems to generate for their goal (karaoke, "
+        "remix, instrument practice, transcription, sampling), and explain which stems to "
+        "merge if they want a custom backing track. When you recommend stems, name them "
         "exactly as listed above and keep answers short and practical."
         + ctx
     )
@@ -75,7 +97,14 @@ def recommend_stems(goal: str, available: list[str]) -> tuple[list[str], str]:
     return list(available), "Not sure of your goal — defaulting to all stems."
 
 
+_HELP_HINTS = ("how do i", "how to", "what do i do", "how does this", "get started",
+               "instructions", "help", "where do i", "confused", "not sure what")
+
+
 def _rule_based_reply(message: str, available: list[str]) -> str:
+    m = (message or "").lower()
+    if any(h in m for h in _HELP_HINTS):
+        return how_to_use()
     picks, why = recommend_stems(message, available)
     listed = ", ".join(picks)
     return (f"For that, I'd generate: **{listed}**.\n_{why}_\n\n"
