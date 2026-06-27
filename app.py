@@ -146,10 +146,11 @@ def on_upload(file_path):
     return name, file_path  # song name -> State, file path -> preview player
 
 
-def _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress):
+def _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress, user_id=None):
     """Run separation with the chosen engine/shifts/overlap and build the output tuple.
 
     Shared by the Separate button and the assistant's improve-and-re-run flow.
+    user_id (a logged-in HF username) routes the archive to permanent per-user storage.
     """
     if not file_path:
         raise gr.Error("Please upload an audio file first.")
@@ -157,10 +158,10 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, pro
     progress(0.1, desc=f"Separating ({engine})… first RoFormer run downloads the model.")
     paths = separate.gpu_separate(file_path, out_dir, engine, mode, chosen, int(shifts), float(overlap))
     progress(1.0, desc="Done")
-    # archive this run (input + stems) to the private dataset, in the background
+    # archive this run (input + stems) — permanent per-user if signed in, else the 14-day pool
     storage.save_run_async(file_path, paths,
                            {"mode": mode, "engine": engine, "shifts": int(shifts),
-                            "overlap": float(overlap)})
+                            "overlap": float(overlap)}, user_id=user_id)
     names = ", ".join(separate.stem_of(p) for p in paths)
     merge_choices = [(separate.stem_of(p), p) for p in paths]
     history = (history or []) + [{
@@ -181,17 +182,21 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, pro
     )
 
 
-def do_separate(file_path, mode, chosen, engine, shifts, overlap, history, progress=gr.Progress()):
+def do_separate(file_path, mode, chosen, engine, shifts, overlap, history,
+                progress=gr.Progress(), profile: gr.OAuthProfile | None = None):
     if engine != "roformer" and not chosen:
         raise gr.Error("Select at least one stem to generate.")
-    return _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress)
+    uid = profile.username if profile else None
+    return _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress, user_id=uid)
 
 
-def improve_rerun(flag, file_path, mode, chosen, engine, shifts, overlap, history, progress=gr.Progress()):
+def improve_rerun(flag, file_path, mode, chosen, engine, shifts, overlap, history,
+                  progress=gr.Progress(), profile: gr.OAuthProfile | None = None):
     """Chained after a chat turn: re-run separation only when the assistant asked to."""
     if not flag:
         return gr.skip()
-    return _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress)
+    uid = profile.username if profile else None
+    return _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress, user_id=uid)
 
 
 def do_reset():
@@ -269,6 +274,54 @@ def chat_fn(message, history, mode, song, engine, shifts, overlap, paths):
     return history, "", gr.update(), gr.update(), gr.update(), False
 
 
+# ---------------- account / my-data (HF OAuth) ----------------
+def account_view(profile: gr.OAuthProfile | None = None):
+    if profile is None:
+        return ("**Not signed in.** The app works fully without an account — but anonymous "
+                "uploads are auto-deleted after 14 days. **Sign in** with the button above to keep "
+                "your songs and stems permanently and browse them here.")
+    return (f"### 👋 Signed in as **{profile.username}**\n"
+            "Your uploads and stems are saved **permanently** under your account. "
+            "Manage your password / account at "
+            "[Hugging Face settings](https://huggingface.co/settings/account). "
+            "Press **Load my saved songs** below to browse them.")
+
+
+def load_my_data(profile: gr.OAuthProfile | None = None):
+    if profile is None:
+        return ([], gr.update(choices=[], value=None), gr.update(choices=[], value=None),
+                "Sign in to see your saved songs.")
+    songs = storage.list_user_songs(profile.username)
+    if not songs:
+        return ([], gr.update(choices=[], value=None), gr.update(choices=[], value=None),
+                "No saved songs yet — separate a track while signed in and it'll appear here.")
+    song_choices = [(f"{s['title']}  ·  {len(s['runs'])} version(s)", s["song_id"]) for s in songs]
+    lines = [f"You have **{len(songs)}** saved song(s):"]
+    for s in songs:
+        nstems = sum(len(r["stems"]) for r in s["runs"])
+        lines.append(f"- **{s['title']}** — {len(s['runs'])} version(s), {nstems} stem files")
+    runs = songs[0]["runs"]
+    run_choices = [(f"{r['run_id']}  ·  {len(r['stems'])} stems", r["run_id"]) for r in runs]
+    return (songs,
+            gr.update(choices=song_choices, value=song_choices[0][1]),
+            gr.update(choices=run_choices, value=run_choices[0][1] if run_choices else None),
+            "\n".join(lines))
+
+
+def on_song_select(song_id, songs):
+    s = next((x for x in (songs or []) if x["song_id"] == song_id), None)
+    if not s:
+        return gr.update(choices=[], value=None)
+    run_choices = [(f"{r['run_id']}  ·  {len(r['stems'])} stems", r["run_id"]) for r in s["runs"]]
+    return gr.update(choices=run_choices, value=run_choices[0][1] if run_choices else None)
+
+
+def fetch_stems(song_id, run_id, profile: gr.OAuthProfile | None = None):
+    if profile is None or not song_id or not run_id:
+        return None
+    return storage.fetch_run_stems(profile.username, song_id, run_id) or None
+
+
 with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     gr.HTML(HEADER)
     song_name = gr.State("")
@@ -276,8 +329,20 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     stem_paths = gr.State([])   # output stem file paths -> drives the preview players
     improve_flag = gr.State(False)  # set by chat when the user asks to improve the split
     merged_paths = gr.State([])  # accumulates every merged-track file for download
+    songs_state = gr.State([])   # cached list of the signed-in user's saved songs
 
     instr_btn = gr.Button("📖 Instructions", size="sm")
+
+    with gr.Accordion("👤 Account & my data", open=False):
+        gr.LoginButton()
+        account_md = gr.Markdown()
+        load_btn = gr.Button("🔄 Load my saved songs", size="sm")
+        with gr.Row():
+            song_dd = gr.Dropdown(label="Your songs", choices=[], scale=3)
+            run_dd = gr.Dropdown(label="Version (run)", choices=[], scale=3)
+            fetch_btn = gr.Button("⬇️ Get these stems", scale=1)
+        account_data_md = gr.Markdown()
+        account_files = gr.File(label="Your saved stems", file_count="multiple", interactive=False)
 
     # collapsible step-by-step "figure" slideshow
     with gr.Group(visible=False) as instr_box:
@@ -400,6 +465,12 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
                    [slide_idx, slide_view, slide_counter])
     next_btn.click(lambda i: nav_slide(i, 1), slide_idx,
                    [slide_idx, slide_view, slide_counter])
+
+    # account / my-data (HF OAuth); profile is auto-injected (None when anonymous)
+    demo.load(account_view, None, account_md)
+    load_btn.click(load_my_data, None, [songs_state, song_dd, run_dd, account_data_md])
+    song_dd.change(on_song_select, [song_dd, songs_state], run_dd)
+    fetch_btn.click(fetch_stems, [song_dd, run_dd], account_files)
 
 if __name__ == "__main__":
     demo.launch()

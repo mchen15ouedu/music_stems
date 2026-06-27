@@ -4,7 +4,7 @@ torch
 torchaudio
 soundfile
 numpy
-gradio
+gradio[oauth]
 huggingface_hub
 # ZeroGPU: attaches a GPU per-call via @spaces.GPU (HF Pro Space, hardware=ZeroGPU).
 spaces

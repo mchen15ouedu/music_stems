@@ -8,6 +8,8 @@ sdk_version: 6.19.0
 app_file: app.py
 pinned: false
 license: mit
+hf_oauth: true
+hf_oauth_expiration_minutes: 43200
 ---
 
 # 🎵 AI Stem Splitter
