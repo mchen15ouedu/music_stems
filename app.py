@@ -331,7 +331,7 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
                          "(slower). The assistant can raise this too.",
                 )
             with gr.Row():
-                go = gr.Button("🎚️ Separate selected stems", variant="primary")
+                go = gr.Button("🎚️ Get stems", variant="primary")
                 rerun = gr.Button("🔁 Re-run", variant="secondary")
                 reset = gr.Button("🔄 Reset", variant="secondary")
             status = gr.Markdown("", elem_classes=["ok-msg"])
