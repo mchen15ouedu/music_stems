@@ -24,8 +24,11 @@ api.upload_folder(
     commit_message="Deploy AI stem splitter",
     ignore_patterns=[
         "*.log", "*.log.err", "pip_pid.txt", "pip_install.*",
-        "__pycache__/*", "*.pyc", "stems_*/*", "*.wav",
+        "__pycache__/*", "*.pyc", "stems_*/*", "merge_*/*", "*.wav",
         ".git/*", ".venv/*", "deploy_space.py",
+        # the ~160 MB drum model is downloaded at runtime from vincewin/drumsep
+        "models/*", "models",
+        "_*.py",   # scratch/test scripts
     ],
 )
 print(f"Uploaded -> https://huggingface.co/spaces/{REPO}")

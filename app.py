@@ -168,9 +168,11 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress):
         f"✅ Done — generated {len(paths)} stem(s): {names}",   # status
         gr.update(choices=merge_choices, value=[]),     # merge_cg
         gr.update(visible=len(paths) >= 2),             # merge_box
-        None,                                           # merge_out
+        None,                                           # merge_out (clear latest-merge player)
         paths,                                          # stem_paths -> preview players
         history,                                        # chatbot
+        None,                                           # merged_files (clear old merges)
+        [],                                             # merged_paths state (reset)
     )
 
 
@@ -207,10 +209,12 @@ def do_reset():
         0,                                               # shifts_sl
         False,                                           # improve_flag
         [],                                              # chatbot (clear chat)
+        None,                                            # merged_files
+        [],                                              # merged_paths
     )
 
 
-def do_merge(selected, progress=gr.Progress()):
+def do_merge(selected, merged_paths, progress=gr.Progress()):
     if not selected or len(selected) < 2:
         raise gr.Error("Tick at least two stems to merge.")
     progress(0.3, desc="Mixing stems...")
@@ -220,7 +224,15 @@ def do_merge(selected, progress=gr.Progress()):
     out_path = os.path.join(out_dir, separate._safe(f"{song} - mix ({labels})") + ".wav")
     separate.merge_stems(selected, out_path)
     progress(1.0, desc="Done")
-    return out_path, f"✅ Merged {len(selected)} stems → {os.path.basename(out_path)}"
+    merged_paths = (merged_paths or []) + [out_path]
+    return (
+        out_path,                       # merge_out (latest merged track)
+        merged_paths,                   # merged_files (all merges, downloadable)
+        merged_paths,                   # merged_paths state
+        gr.update(value=[]),            # merge_cg -> clear selection for the next merge
+        f"✅ Merged {len(selected)} stems → {os.path.basename(out_path)}. "
+        f"Pick another set and merge again — {len(merged_paths)} mix(es) so far.",
+    )
 
 
 def suggest_stems(goal, mode):
@@ -254,6 +266,7 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     slide_idx = gr.State(0)
     stem_paths = gr.State([])   # output stem file paths -> drives the preview players
     improve_flag = gr.State(False)  # set by chat when the user asks to improve the split
+    merged_paths = gr.State([])  # accumulates every merged-track file for download
 
     instr_btn = gr.Button("📖 Instructions", size="sm")
 
@@ -287,7 +300,7 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
                 value=separate.mode_stems(separate.DEFAULT_MODE),
                 label="Stems to generate",
             )
-            with gr.Accordion("⚙️ Quality (engine & shifts)", open=False):
+            with gr.Accordion("⚙️ Quality (engine & shifts) — adjust, then Re-run", open=True):
                 engine_dd = gr.Dropdown(
                     choices=[
                         ("Demucs — fast", "demucs"),
@@ -305,6 +318,7 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
                 )
             with gr.Row():
                 go = gr.Button("🎚️ Separate selected stems", variant="primary")
+                rerun = gr.Button("🔁 Re-run", variant="secondary")
                 reset = gr.Button("🔄 Reset", variant="secondary")
             status = gr.Markdown("", elem_classes=["ok-msg"])
             files_out = gr.File(label="Download stems", file_count="multiple", interactive=False)
@@ -321,13 +335,16 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
                              waveform_options=WAVEFORM)
 
             with gr.Group(visible=False) as merge_box:
-                gr.Markdown("### 🎚️ Merge stems\nTick 2–3 of the stems above and combine "
-                            "them into one file (e.g. *drums + bass* for a rhythm track).")
+                gr.Markdown("### 🎚️ Merge stems\nTick 2–3 stems and combine them into one file "
+                            "(e.g. *drums + bass* for a rhythm track). You can merge again with a "
+                            "different set — each mix is added to the list below.")
                 merge_cg = gr.CheckboxGroup(choices=[], label="Stems to merge")
                 merge_btn = gr.Button("Merge selected into one file", variant="primary")
                 merge_status = gr.Markdown("", elem_classes=["ok-msg"])
-                merge_out = gr.Audio(label="Merged track", interactive=False,
+                merge_out = gr.Audio(label="▶ Latest merged track", interactive=False,
                                      waveform_options=WAVEFORM)
+                merged_files = gr.File(label="Download merged tracks", file_count="multiple",
+                                       interactive=False)
 
         with gr.Column(scale=2):
             gr.Markdown("### 🤖 Assistant\nAsk what each stem is, or describe your goal "
@@ -340,14 +357,17 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     # wiring
     mode_dd.change(on_mode_change, mode_dd, stems_cg)
     audio_in.change(on_upload, audio_in, [song_name, input_preview])
-    sep_outputs = [files_out, status, merge_cg, merge_box, merge_out, stem_paths, chatbot]
-    go.click(do_separate,
-             [audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, chatbot], sep_outputs)
-    merge_btn.click(do_merge, merge_cg, [merge_out, merge_status])
+    sep_outputs = [files_out, status, merge_cg, merge_box, merge_out, stem_paths, chatbot,
+                   merged_files, merged_paths]
+    sep_inputs = [audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, chatbot]
+    go.click(do_separate, sep_inputs, sep_outputs)
+    rerun.click(do_separate, sep_inputs, sep_outputs)
+    merge_btn.click(do_merge, [merge_cg, merged_paths],
+                    [merge_out, merged_files, merged_paths, merge_cg, merge_status])
     reset.click(do_reset, None,
                 [audio_in, input_preview, mode_dd, stems_cg, status, files_out,
                  merge_box, merge_cg, merge_out, merge_status, stem_paths, song_name,
-                 engine_dd, shifts_sl, improve_flag, chatbot])
+                 engine_dd, shifts_sl, improve_flag, chatbot, merged_files, merged_paths])
     suggest_btn.click(suggest_stems, [goal_box, mode_dd], [stems_cg, status])
     # chat: answer; if it was an "improve" request, escalate settings then re-run
     msg.submit(chat_fn,
