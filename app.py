@@ -11,6 +11,7 @@ import gradio as gr
 
 import separate
 import llm_assistant as assistant
+import storage
 
 # ---- Chartmetric-inspired dark theme (navy canvas, orange accent, teal/green) ----
 _ORANGE = gr.themes.Color("#FFF1E9", "#FFE0CC", "#FFC3A0", "#FFA476", "#FF8552",
@@ -156,6 +157,10 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, pro
     progress(0.1, desc=f"Separating ({engine})… first RoFormer run downloads the model.")
     paths = separate.gpu_separate(file_path, out_dir, engine, mode, chosen, int(shifts), float(overlap))
     progress(1.0, desc="Done")
+    # archive this run (input + stems) to the private dataset, in the background
+    storage.save_run_async(file_path, paths,
+                           {"mode": mode, "engine": engine, "shifts": int(shifts),
+                            "overlap": float(overlap)})
     names = ", ".join(separate.stem_of(p) for p in paths)
     merge_choices = [(separate.stem_of(p), p) for p in paths]
     history = (history or []) + [{
