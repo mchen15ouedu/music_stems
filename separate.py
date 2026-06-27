@@ -273,7 +273,7 @@ def separate_roformer(input_path, out_dir, progress=None) -> list[str]:
 
 
 def run_separation(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
-                   stems=None, device=None, progress=None, shifts=0) -> list[str]:
+                   stems=None, device=None, progress=None, shifts=0, overlap=0.25) -> list[str]:
     """Single entry point the app uses; dispatches on the chosen engine.
 
     - 'demucs'    : the mode's standard model (4/6/9-stem), with optional shifts.
@@ -281,6 +281,8 @@ def run_separation(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
                     cleaner but ~4x slower.
     - 'roformer'  : BS-RoFormer (newest architecture) — best vocals/instrumental,
                     always 2 stems; mode/stem selection is ignored.
+
+    shifts/overlap are quality knobs (higher = cleaner, slower).
     """
     if engine == "roformer":
         return separate_roformer(input_path, out_dir, progress=progress)
@@ -288,16 +290,18 @@ def run_separation(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
     if engine == "demucs_ft" and MODES[mode]["base"] == "htdemucs":
         base_override = "htdemucs_ft"
     return separate_mode(input_path, out_dir, mode, stems, device=device,
-                         progress=progress, base_override=base_override, shifts=shifts)
+                         progress=progress, base_override=base_override,
+                         shifts=shifts, overlap=overlap)
 
 
 @_gpu
 def gpu_separate(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
-                 stems=None, shifts=0) -> list[str]:
+                 stems=None, shifts=0, overlap=0.25) -> list[str]:
     """GPU entry point for ZeroGPU. Takes only picklable args (no progress callback,
     which can't cross the GPU process boundary). Device auto-selects cuda when present."""
     return run_separation(input_path, out_dir, engine=engine, mode=mode,
-                          stems=stems, device=None, shifts=shifts, progress=None)
+                          stems=stems, device=None, shifts=shifts, overlap=overlap,
+                          progress=None)
 
 
 def merge_stems(paths, out_path) -> str:

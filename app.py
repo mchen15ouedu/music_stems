@@ -145,8 +145,8 @@ def on_upload(file_path):
     return name, file_path  # song name -> State, file path -> preview player
 
 
-def _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress):
-    """Run separation with the chosen engine/shifts and build the output tuple.
+def _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress):
+    """Run separation with the chosen engine/shifts/overlap and build the output tuple.
 
     Shared by the Separate button and the assistant's improve-and-re-run flow.
     """
@@ -154,7 +154,7 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress):
         raise gr.Error("Please upload an audio file first.")
     out_dir = tempfile.mkdtemp(prefix="stems_")
     progress(0.1, desc=f"Separating ({engine})… first RoFormer run downloads the model.")
-    paths = separate.gpu_separate(file_path, out_dir, engine, mode, chosen, int(shifts))
+    paths = separate.gpu_separate(file_path, out_dir, engine, mode, chosen, int(shifts), float(overlap))
     progress(1.0, desc="Done")
     names = ", ".join(separate.stem_of(p) for p in paths)
     merge_choices = [(separate.stem_of(p), p) for p in paths]
@@ -176,17 +176,17 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress):
     )
 
 
-def do_separate(file_path, mode, chosen, engine, shifts, history, progress=gr.Progress()):
+def do_separate(file_path, mode, chosen, engine, shifts, overlap, history, progress=gr.Progress()):
     if engine != "roformer" and not chosen:
         raise gr.Error("Select at least one stem to generate.")
-    return _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress)
+    return _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress)
 
 
-def improve_rerun(flag, file_path, mode, chosen, engine, shifts, history, progress=gr.Progress()):
+def improve_rerun(flag, file_path, mode, chosen, engine, shifts, overlap, history, progress=gr.Progress()):
     """Chained after a chat turn: re-run separation only when the assistant asked to."""
     if not flag:
         return gr.skip()
-    return _run_and_pack(file_path, mode, chosen, engine, shifts, history, progress)
+    return _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, progress)
 
 
 def do_reset():
@@ -207,6 +207,7 @@ def do_reset():
         "",                                              # song_name
         "demucs",                                        # engine_dd
         0,                                               # shifts_sl
+        0.25,                                            # overlap_sl
         False,                                           # improve_flag
         [],                                              # chatbot (clear chat)
         None,                                            # merged_files
@@ -241,23 +242,26 @@ def suggest_stems(goal, mode):
     return gr.update(value=picks), f"Suggested **{', '.join(picks)}** — {why}"
 
 
-def chat_fn(message, history, mode, song, engine, shifts, paths):
+def chat_fn(message, history, mode, song, engine, shifts, overlap, paths):
     history = history or []
-    # If a split exists and the user complains about quality, escalate + flag a re-run.
+    # If a split exists and the user complains about quality, let the LLM analyze the
+    # complaint, pick the best engine/shifts/overlap, and flag an automatic re-run.
     if paths and assistant.wants_improvement(message):
-        new_engine, new_shifts, why = assistant.improve_settings(message, engine, int(shifts))
+        new_engine, new_shifts, new_overlap, why = assistant.improve_plan(
+            message, engine, int(shifts), float(overlap))
         history = history + [
             {"role": "user", "content": message},
             {"role": "assistant", "content": why},
         ]
-        return history, "", gr.update(value=new_engine), gr.update(value=new_shifts), True
+        return (history, "", gr.update(value=new_engine), gr.update(value=new_shifts),
+                gr.update(value=new_overlap), True)
     available = separate.mode_stems(mode)
     reply = assistant.chat(message, history, mode, available, song)
     history = history + [
         {"role": "user", "content": message},
         {"role": "assistant", "content": reply},
     ]
-    return history, "", gr.update(), gr.update(), False
+    return history, "", gr.update(), gr.update(), gr.update(), False
 
 
 with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
@@ -316,6 +320,11 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
                     info="0 = fastest. Higher averages more passes for cleaner output "
                          "(linear time cost). The assistant can raise this for you.",
                 )
+                overlap_sl = gr.Slider(
+                    0.25, 0.9, value=0.25, step=0.05, label="Overlap",
+                    info="Window overlap. Higher = smoother, fewer chunk-edge artifacts "
+                         "(slower). The assistant can raise this too.",
+                )
             with gr.Row():
                 go = gr.Button("🎚️ Separate selected stems", variant="primary")
                 rerun = gr.Button("🔁 Re-run", variant="secondary")
@@ -359,7 +368,7 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     audio_in.change(on_upload, audio_in, [song_name, input_preview])
     sep_outputs = [files_out, status, merge_cg, merge_box, merge_out, stem_paths, chatbot,
                    merged_files, merged_paths]
-    sep_inputs = [audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, chatbot]
+    sep_inputs = [audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, overlap_sl, chatbot]
     go.click(do_separate, sep_inputs, sep_outputs)
     rerun.click(do_separate, sep_inputs, sep_outputs)
     merge_btn.click(do_merge, [merge_cg, merged_paths],
@@ -367,14 +376,14 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
     reset.click(do_reset, None,
                 [audio_in, input_preview, mode_dd, stems_cg, status, files_out,
                  merge_box, merge_cg, merge_out, merge_status, stem_paths, song_name,
-                 engine_dd, shifts_sl, improve_flag, chatbot, merged_files, merged_paths])
+                 engine_dd, shifts_sl, overlap_sl, improve_flag, chatbot, merged_files, merged_paths])
     suggest_btn.click(suggest_stems, [goal_box, mode_dd], [stems_cg, status])
-    # chat: answer; if it was an "improve" request, escalate settings then re-run
+    # chat: answer; if it was an "improve" request, the LLM picks engine/shifts/overlap, then re-run
     msg.submit(chat_fn,
-               [msg, chatbot, mode_dd, song_name, engine_dd, shifts_sl, stem_paths],
-               [chatbot, msg, engine_dd, shifts_sl, improve_flag]).then(
+               [msg, chatbot, mode_dd, song_name, engine_dd, shifts_sl, overlap_sl, stem_paths],
+               [chatbot, msg, engine_dd, shifts_sl, overlap_sl, improve_flag]).then(
         improve_rerun,
-        [improve_flag, audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, chatbot],
+        [improve_flag, audio_in, mode_dd, stems_cg, engine_dd, shifts_sl, overlap_sl, chatbot],
         sep_outputs)
 
     # instructions slideshow

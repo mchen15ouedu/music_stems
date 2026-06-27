@@ -116,28 +116,107 @@ def wants_improvement(message: str) -> bool:
     return any(h in m for h in IMPROVE_HINTS)
 
 
-def improve_settings(complaint: str, engine: str, shifts: int) -> tuple[str, int, str]:
-    """Pick the next, stronger (engine, shifts) and explain it. Deterministic ladder."""
+def improve_settings(complaint: str, engine: str, shifts: int,
+                     overlap: float = 0.25) -> tuple[str, int, float, str]:
+    """Deterministic escalation ladder -> (engine, shifts, overlap, why).
+
+    Climbs the cheapest-first quality ladder: shifts -> overlap -> fine-tuned
+    model -> RoFormer. Always changes something so a re-run is meaningful, and
+    works with no LLM backend.
+    """
     c = (complaint or "").lower()
+    shifts = int(shifts)
+    overlap = float(overlap)
     vocal_focus = any(w in c for w in ("vocal", "voice", "sing", "acapella", "karaoke"))
     if engine == "demucs":
-        if int(shifts) < 2:
-            return ("demucs", 2,
-                    "I turned on the **shift trick (shifts=2)** — it averages a few "
-                    "passes to cut artifacts. Re-running now (about 2× slower).")
-        return ("demucs_ft", max(int(shifts), 2),
-                "I switched to the **fine-tuned model (Demucs FT)**, which separates "
-                "more cleanly. It's ~4× slower — re-running now.")
+        if shifts < 2:
+            return ("demucs", 2, overlap,
+                    "Turned on the **shift trick (shifts=2)** — averages a few passes to "
+                    "cut artifacts. Re-running (~2× slower).")
+        if overlap < 0.5:
+            return ("demucs", shifts, 0.5,
+                    "Raised **overlap to 0.5** to smooth the chunk-edge artifacts. Re-running.")
+        return ("demucs_ft", max(shifts, 2), overlap,
+                "Switched to the **fine-tuned model (Demucs FT)** — cleaner separation, "
+                "~4× slower. Re-running.")
     if engine == "demucs_ft":
+        if overlap < 0.5:
+            return ("demucs_ft", shifts, 0.5,
+                    "Raised **overlap to 0.5** on the fine-tuned model for smoother output. "
+                    "Re-running.")
         extra = " RoFormer is especially strong on vocals." if vocal_focus else ""
-        return ("roformer", int(shifts),
-                "I switched to **RoFormer**, a newer architecture that's the cleanest "
-                "option here (vocals/instrumental)." + extra + " Re-running now.")
-    # already on roformer — nothing stronger to escalate to
-    return ("roformer", int(shifts),
-            "You're already on **RoFormer**, the highest-quality engine. If it's still "
-            "not clean, the source mix may be the limit — try a different song section, "
-            "or run on a GPU for headroom. I'll re-run RoFormer once more.")
+        return ("roformer", shifts, overlap,
+                "Switched to **RoFormer**, the cleanest engine (vocals/instrumental)."
+                + extra + " Re-running.")
+    # already on roformer
+    if overlap < 0.5:
+        return ("roformer", shifts, 0.5,
+                "Raised RoFormer **overlap to 0.5** for a smoother result. Re-running.")
+    return ("roformer", shifts, overlap,
+            "You're already on **RoFormer** at high overlap — the top-quality setting. "
+            "If it's still not clean, the source mix may be the limit (try a different "
+            "section). Re-running once more.")
+
+
+def _raw_completion(system_prompt: str, user_message: str, max_tokens: int = 200) -> str:
+    """One-shot LLM completion via the configured backend. Raises on failure."""
+    messages = [{"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}]
+    if BACKEND in ("vllm", "openai"):
+        from openai import OpenAI
+        base = os.environ.get("VLLM_BASE_URL" if BACKEND == "vllm" else "OPENAI_BASE_URL")
+        key = os.environ.get("OPENAI_API_KEY", "EMPTY")
+        client = OpenAI(base_url=base, api_key=key)
+        resp = client.chat.completions.create(model=MODEL, messages=messages,
+                                              max_tokens=max_tokens, temperature=0.1)
+        return resp.choices[0].message.content
+    from huggingface_hub import InferenceClient
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+    client = InferenceClient(model=MODEL, token=token)
+    resp = client.chat_completion(messages=messages, max_tokens=max_tokens, temperature=0.1)
+    return resp.choices[0].message.content
+
+
+def improve_plan(complaint: str, engine: str, shifts: int, overlap: float,
+                 available: list[str] | None = None) -> tuple[str, int, float, str]:
+    """LLM-driven version: let the model analyze the complaint and choose the knobs.
+
+    Returns (engine, shifts, overlap, why). Falls back to the deterministic ladder
+    when there's no LLM backend/token or the call fails — so it always does something.
+    """
+    fallback = improve_settings(complaint, engine, shifts, overlap)
+    if BACKEND == "none":
+        return fallback
+    try:
+        import json
+        sys_prompt = (
+            "You tune an audio source-separation app to fix a user's complaint about stem "
+            "quality. Choose the SINGLE best settings change and explain it in one sentence.\n"
+            "Engines: 'demucs' (fast), 'demucs_ft' (cleaner, ~4x slower), "
+            "'roformer' (newest, best for vocals/instrumental but only 2 stems).\n"
+            "Knobs: shifts (int 0-10, higher=cleaner+slower), overlap (float 0.25-0.9, "
+            "higher=smoother edges+slower).\n"
+            "Guidance: vocal bleed/voice issues -> roformer; choppy/clicky/edge artifacts -> "
+            "raise overlap; general noise/muddiness -> raise shifts then demucs_ft. Only pick "
+            "roformer if the user cares about vocals or instrumental, since it drops to 2 stems.\n"
+            f"Current: engine={engine}, shifts={int(shifts)}, overlap={float(overlap)}.\n"
+            'Respond with ONLY JSON: {"engine":"...","shifts":0,"overlap":0.25,"why":"..."}'
+        )
+        raw = _raw_completion(sys_prompt, complaint or "Make it cleaner.")
+        start, end = raw.find("{"), raw.rfind("}")
+        data = json.loads(raw[start:end + 1])
+        eng = data.get("engine", engine)
+        if eng not in ("demucs", "demucs_ft", "roformer"):
+            eng = engine
+        sh = max(0, min(10, int(data.get("shifts", shifts))))
+        ov = max(0.25, min(0.9, float(data.get("overlap", overlap))))
+        why = str(data.get("why", "")).strip() or "Adjusted the settings for your complaint."
+        # nothing changed? nudge with the ladder so the re-run is meaningful
+        if (eng, sh, round(ov, 2)) == (engine, int(shifts), round(float(overlap), 2)):
+            return fallback
+        return (eng, sh, ov, "🤖 " + why + " Re-running.")
+    except Exception:
+        return fallback
 
 
 def _rule_based_reply(message: str, available: list[str]) -> str:
