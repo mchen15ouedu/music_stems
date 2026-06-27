@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 
 BACKEND = os.environ.get("STEM_LLM_BACKEND", "hf").lower()
-DEFAULT_HF_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
+DEFAULT_HF_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # ungated + served by HF Inference Providers
 MODEL = os.environ.get("STEM_LLM_MODEL", DEFAULT_HF_MODEL)
 
 STEM_GLOSSARY = {
