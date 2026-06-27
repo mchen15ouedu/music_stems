@@ -21,6 +21,8 @@ import os
 BACKEND = os.environ.get("STEM_LLM_BACKEND", "hf").lower()
 DEFAULT_HF_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # ungated + served by HF Inference Providers
 MODEL = os.environ.get("STEM_LLM_MODEL", DEFAULT_HF_MODEL)
+# OpenAI is used as an automatic fallback when the HF call fails and OPENAI_API_KEY is set.
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 STEM_GLOSSARY = {
     "vocals": "the lead and backing voices",
@@ -158,23 +160,56 @@ def improve_settings(complaint: str, engine: str, shifts: int,
             "section). Re-running once more.")
 
 
-def _raw_completion(system_prompt: str, user_message: str, max_tokens: int = 200) -> str:
-    """One-shot LLM completion via the configured backend. Raises on failure."""
-    messages = [{"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}]
-    if BACKEND in ("vllm", "openai"):
+# ---- provider fallback chain: primary (HF/Qwen) -> OpenAI -> rule-based ----
+def _provider_order() -> list[str]:
+    """LLM providers to try, in order. Adds OpenAI as a fallback when its key is set."""
+    if BACKEND == "none":
+        return []
+    order = [BACKEND]
+    if "openai" not in order and os.environ.get("OPENAI_API_KEY"):
+        order.append("openai")
+    return order
+
+
+def _call_provider(provider: str, messages: list[dict], max_tokens: int, temperature: float) -> str:
+    if provider == "openai":
         from openai import OpenAI
-        base = os.environ.get("VLLM_BASE_URL" if BACKEND == "vllm" else "OPENAI_BASE_URL")
-        key = os.environ.get("OPENAI_API_KEY", "EMPTY")
-        client = OpenAI(base_url=base, api_key=key)
-        resp = client.chat.completions.create(model=MODEL, messages=messages,
-                                              max_tokens=max_tokens, temperature=0.1)
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"),
+                        base_url=os.environ.get("OPENAI_BASE_URL") or None)
+        resp = client.chat.completions.create(model=OPENAI_MODEL, messages=messages,
+                                              max_tokens=max_tokens, temperature=temperature)
         return resp.choices[0].message.content
+    if provider == "vllm":
+        from openai import OpenAI
+        client = OpenAI(base_url=os.environ.get("VLLM_BASE_URL"),
+                        api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"))
+        resp = client.chat.completions.create(model=MODEL, messages=messages,
+                                              max_tokens=max_tokens, temperature=temperature)
+        return resp.choices[0].message.content
+    # default: Hugging Face Inference API
     from huggingface_hub import InferenceClient
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
     client = InferenceClient(model=MODEL, token=token)
-    resp = client.chat_completion(messages=messages, max_tokens=max_tokens, temperature=0.1)
+    resp = client.chat_completion(messages=messages, max_tokens=max_tokens, temperature=temperature)
     return resp.choices[0].message.content
+
+
+def _complete(messages: list[dict], max_tokens: int = 200, temperature: float = 0.4) -> str:
+    """Try each provider in order (HF -> OpenAI); raise only if all fail."""
+    errors = []
+    for provider in _provider_order():
+        try:
+            return _call_provider(provider, messages, max_tokens, temperature)
+        except Exception as e:
+            errors.append(f"{provider}:{type(e).__name__}")
+    raise RuntimeError("no LLM provider available (" + ", ".join(errors) + ")")
+
+
+def _raw_completion(system_prompt: str, user_message: str, max_tokens: int = 200) -> str:
+    """One-shot LLM completion via the provider chain. Raises if all providers fail."""
+    return _complete([{"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_message}],
+                     max_tokens=max_tokens, temperature=0.1)
 
 
 def improve_plan(complaint: str, engine: str, shifts: int, overlap: float,
@@ -233,7 +268,7 @@ def chat(message: str, history: list[dict] | None, model_name: str,
          available: list[str], song: str | None = None) -> str:
     """Return an assistant reply. Falls back to rule-based on any error/missing config."""
     history = history or []
-    if BACKEND == "none":
+    if not _provider_order():
         return _rule_based_reply(message, available)
     try:
         messages = [{"role": "system", "content": _system_prompt(model_name, available, song)}]
@@ -241,22 +276,7 @@ def chat(message: str, history: list[dict] | None, model_name: str,
             if turn.get("role") in ("user", "assistant") and turn.get("content"):
                 messages.append({"role": turn["role"], "content": turn["content"]})
         messages.append({"role": "user", "content": message})
-
-        if BACKEND in ("vllm", "openai"):
-            from openai import OpenAI
-            base = os.environ.get("VLLM_BASE_URL" if BACKEND == "vllm" else "OPENAI_BASE_URL")
-            key = os.environ.get("OPENAI_API_KEY", "EMPTY")
-            client = OpenAI(base_url=base, api_key=key)
-            resp = client.chat.completions.create(model=MODEL, messages=messages,
-                                                  max_tokens=300, temperature=0.4)
-            return resp.choices[0].message.content.strip()
-
-        # default: Hugging Face Inference API
-        from huggingface_hub import InferenceClient
-        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
-        client = InferenceClient(model=MODEL, token=token)
-        resp = client.chat_completion(messages=messages, max_tokens=300, temperature=0.4)
-        return resp.choices[0].message.content.strip()
+        return _complete(messages, max_tokens=300, temperature=0.4).strip()
     except Exception as e:
         return (_rule_based_reply(message, available)
-                + f"\n\n_(LLM backend unavailable — used built-in rules. {type(e).__name__})_")
+                + f"\n\n_(LLM unavailable — used built-in rules. {type(e).__name__})_")
