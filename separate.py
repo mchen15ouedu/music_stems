@@ -47,6 +47,38 @@ DRUM_ORDER = ["kick", "snare", "toms", "cymbals"]
 # BS-RoFormer vocals model: cleaner vocals/instrumental split than Demucs, 2 stems.
 ROFORMER_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 
+# Formats every engine decodes natively (libsndfile-backed readers). Anything
+# else — AAC / ALAC inside .m4a, raw .aac, .opus, .wma, .caf, video containers —
+# is transcoded to WAV with ffmpeg first, so uploads from phones (Apple formats)
+# work with every engine, including RoFormer which doesn't use ffmpeg itself.
+NATIVE_EXTS = {".wav", ".aiff", ".aif", ".aifc", ".flac", ".mp3", ".ogg"}
+
+
+def prepare_input(input_path: str) -> str:
+    """Return a path every engine can read, transcoding to WAV when needed.
+
+    The original file is never touched (the WAV copy goes to a temp dir) and
+    the song name is preserved so stems stay labeled '<song> - <stem>.wav'.
+    Falls back to the original path if ffmpeg is missing or conversion fails.
+    """
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext in NATIVE_EXTS:
+        return input_path
+    import shutil
+    import subprocess
+    import tempfile
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return input_path
+    song = _safe(os.path.splitext(os.path.basename(input_path))[0])
+    out = os.path.join(tempfile.mkdtemp(prefix="input_"), song + ".wav")
+    try:
+        subprocess.run([ffmpeg, "-y", "-i", input_path, "-vn", "-acodec", "pcm_s16le", out],
+                       check=True, capture_output=True)
+        return out
+    except Exception:
+        return input_path
+
 # Engines selectable in the app: label-friendly quality tiers.
 ENGINES = ("demucs", "demucs_ft", "roformer")
 
@@ -284,6 +316,7 @@ def run_separation(input_path, out_dir, engine="demucs", mode=DEFAULT_MODE,
 
     shifts/overlap are quality knobs (higher = cleaner, slower).
     """
+    input_path = prepare_input(input_path)
     if engine == "roformer":
         return separate_roformer(input_path, out_dir, progress=progress)
     base_override = None

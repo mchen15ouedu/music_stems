@@ -68,6 +68,13 @@ h1, h2, h3, .prose h1, .prose h2, .prose h3, .md h1, .md h2, .md h3 {
   letter-spacing: .01em;
 }
 .ok-msg, .ok-msg * { color: #2FD08A !important; }
+/* Phone layout: let button rows wrap, keep touch targets tappable, trim padding. */
+@media (max-width: 680px) {
+  .gradio-container {padding: 6px !important;}
+  .gradio-container .row {flex-wrap: wrap !important;}
+  .gradio-container .row > * {min-width: 0 !important;}
+  .gradio-container button {min-height: 44px;}
+}
 """
 
 # Green-forward waveforms on every player (teal track, green progress fill).
@@ -80,7 +87,8 @@ except Exception:
 # green strip directly beneath it that carries the tagline + intro text.
 HEADER = """
 <div style="background:#FFFFFF;padding:16px 20px 0;">
-  <div style="font-family:'Anton',Impact,sans-serif;color:#0A0A0A;font-size:44px;
+  <div style="font-family:'Anton',Impact,sans-serif;color:#0A0A0A;
+              font-size:clamp(28px, 8vw, 44px);
               line-height:1.0;letter-spacing:.01em;">🎵 AI STEM SPLITTER</div>
 </div>
 <div style="background:#2FD08A;color:#06231A;padding:11px 20px 14px;border-radius:0;margin:0 0 12px;">
@@ -99,7 +107,8 @@ HEADER = """
 # --- step-by-step "figure" slideshow shown by the Instructions button ---
 SLIDES = [
     ("🎵", "Step 1 — Upload your song",
-     "Drop a file into the upload box on the left. mp3, wav, flac and m4a all work."),
+     "Drop a file into the upload box (on a phone, tap it to pick from your Files). "
+     "MP3, WAV, AIFF, FLAC, ALAC, AAC and M4A all work."),
     ("🔢", "Step 2 — Choose how many stems",
      "Pick 4, 6, or 9 stems. More stems take longer; 9 also splits the drum kit into "
      "kick, snare, toms and cymbals."),
@@ -155,8 +164,11 @@ def _run_and_pack(file_path, mode, chosen, engine, shifts, overlap, history, pro
     if not file_path:
         raise gr.Error("Please upload an audio file first.")
     out_dir = tempfile.mkdtemp(prefix="stems_")
+    # Transcode phone/Apple formats (AAC/ALAC/...) to WAV on CPU, before the GPU call.
+    progress(0.05, desc="Preparing audio…")
+    src_path = separate.prepare_input(file_path)
     progress(0.1, desc=f"Separating ({engine})… first RoFormer run downloads the model.")
-    paths = separate.gpu_separate(file_path, out_dir, engine, mode, chosen, int(shifts), float(overlap))
+    paths = separate.gpu_separate(src_path, out_dir, engine, mode, chosen, int(shifts), float(overlap))
     progress(1.0, desc="Done")
     # archive this run (input + stems) — permanent per-user if signed in, else the 14-day pool
     storage.save_run_async(file_path, paths,
@@ -355,8 +367,13 @@ with gr.Blocks(title="AI Stem Splitter", theme=THEME, css=CSS) as demo:
 
     with gr.Row():
         with gr.Column(scale=3):
-            audio_in = gr.File(label="Upload song (mp3 / wav / flac / m4a ...)",
-                               file_types=["audio"], type="filepath")
+            # "audio" alone becomes accept="audio/*", which iOS Safari uses to gray
+            # out FLAC/AIFF/etc. in the Files picker — list extensions explicitly too.
+            audio_in = gr.File(
+                label="Upload song (MP3 · WAV · AIFF · FLAC · ALAC · AAC · M4A …)",
+                file_types=["audio", ".mp3", ".wav", ".aiff", ".aif", ".aifc", ".flac",
+                            ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wma", ".caf"],
+                type="filepath")
             input_preview = gr.Audio(label="▶ Preview uploaded song", interactive=False,
                                      waveform_options=WAVEFORM)
             mode_dd = gr.Dropdown(
