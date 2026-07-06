@@ -270,7 +270,8 @@ def chat_fn(message, history, mode, song, engine, shifts, overlap, paths):
     # complaint, pick the best engine/shifts/overlap, and flag an automatic re-run.
     if paths and assistant.wants_improvement(message):
         new_engine, new_shifts, new_overlap, why = assistant.improve_plan(
-            message, engine, int(shifts), float(overlap))
+            message, engine, int(shifts), float(overlap),
+            mode=mode, stems=[separate.stem_of(p) for p in paths])
         history = history + [
             {"role": "user", "content": message},
             {"role": "assistant", "content": why},
